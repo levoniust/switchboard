@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+# Switchboard hook for Claude Code (claude and claude-local). Forwards the hook event to the local bridge so the
+# phone app can show status and alerts. Status only: it never blocks, never prints, and always exits 0.
+import json, os, sys, urllib.request
+
+def main():
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return
+    try:
+        port, key = open(os.path.expanduser("~/.config/switchboard/hook.key")).read().split()
+        ev = json.load(sys.stdin)
+    except Exception:
+        return
+    base = os.environ.get("ANTHROPIC_BASE_URL", "")
+    ev["_pane"] = pane
+    ev["_kind"] = "claude-local" if base and "anthropic.com" not in base else "claude"
+    for k in ("transcript_path", "scratchpad_dir", "agent_transcript_path"):
+        ev.pop(k, None)
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/hook", json.dumps(ev).encode(),
+                                 {"Content-Type": "application/json", "X-Switchboard-Key": key})
+    try:
+        urllib.request.urlopen(req, timeout=1.5).read()
+    except Exception:
+        pass
+
+try:
+    main()
+except Exception:
+    pass
+sys.exit(0)

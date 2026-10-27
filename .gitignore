@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+app/build/
+app/.dart_tool/
+app/android/key.properties
+*.jks
+*.keystore
+app/assets/private/*
+!app/assets/private/.keep
+!app/assets/private/miko/
+app/assets/private/miko/*
+!app/assets/private/miko/.keep
