@@ -6,7 +6,7 @@ enum SkinStyle { cli, material1, starship, galactic, cyberpunk, crt, miko }
 
 /// Mascot variant. The pictures and lines live in assets/private/miko/ (not in the public repo):
 /// `<pro|hood|chibi>_<idle|working|done|permission|question|error|sleep>.webp` + `lines.json`.
-enum MikoSet { pro, hood, chibi }
+enum MikoSet { pro, hood, chibi, chibiNight }
 
 class Skin {
   final String id, name, blurb;
@@ -225,6 +225,16 @@ final skins = <Skin>[
     bands: const [Color(0xFFFFB3C6), Color(0xFFB9D99A), Color(0xFFF7D08A)],
     uiFont: 'Roboto', termFont: _mono, headFont: 'Roboto', radius: 24,
     term: _term(bg: const Color(0xFF2B2230), fg: const Color(0xFFFFF0F5), cursor: const Color(0xFFFF8FB1)),
+  ),
+  Skin(
+    id: 'miko_chibi_night', name: 'Chibi Miko Night', blurb: 'Mascot pack: chibi, dark mode. Sticker Miko on deep plum.',
+    style: SkinStyle.miko, brightness: Brightness.dark, miko: MikoSet.chibiNight,
+    bg: const Color(0xFF1B1520), surface: const Color(0xFF2A2130), fg: const Color(0xFFF6E8EE),
+    dim: const Color(0xFF9C8A98), accent: const Color(0xFFFF8FB1), accent2: const Color(0xFFA9C97A),
+    danger: const Color(0xFFFF6B6B), ok: const Color(0xFFA9C97A),
+    bands: const [Color(0xFFFF8FB1), Color(0xFFA9C97A), Color(0xFFF7D08A)],
+    uiFont: 'Roboto', termFont: _mono, headFont: 'Roboto', radius: 24,
+    term: _term(bg: const Color(0xFF150F19), fg: const Color(0xFFFFF0F5), cursor: const Color(0xFFFF8FB1)),
   ),
 ];
 

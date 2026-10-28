@@ -19,7 +19,7 @@ class MikoBanner extends StatelessWidget {
     if (set == null || !settings.mikoAvailable) return const SizedBox.shrink();
     final img = settings.mikoImage(set, state);
     final line = settings.mikoLine(set, state, session: session) ?? fallback ?? '';
-    final chibi = set == MikoSet.chibi;
+    final chibi = set == MikoSet.chibi || set == MikoSet.chibiNight;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
