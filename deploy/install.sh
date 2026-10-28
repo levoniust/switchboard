@@ -18,7 +18,9 @@ hooks=1; init_args=()
 while [ $# -gt 0 ]; do
   case $1 in
     --no-hooks) hooks=0 ;;
-    --hosts|--ha-url|--ha-notify|--ha-token-file|--vigil-url|--port|--tmux-session) init_args+=("$1" "$2"); shift ;;
+    --hosts|--ha-url|--ha-notify|--ha-token-file|--vigil-url|--port|--tmux-session)
+      [ $# -ge 2 ] || { echo "$1 needs a value"; exit 1; }
+      init_args+=("$1" "$2"); shift ;;
     *) echo "unknown option $1"; exit 1 ;;
   esac; shift
 done

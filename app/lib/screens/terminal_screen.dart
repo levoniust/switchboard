@@ -130,6 +130,8 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
       );
       if (_closed || reader != _reader) {
         ws.close();
+        // the view changed while we were connecting: connect again for the new view (runs after `finally` below)
+        if (!_closed) Future.microtask(_connect);
         return;
       }
       _ws = ws;

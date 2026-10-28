@@ -94,25 +94,37 @@ class Hub extends ChangeNotifier {
     server = s;
     promptHost = s.name.toLowerCase();
     api = Api(s);
+    _paused = false; // a new pairing starts fresh, even right after "Forget"
     await connect();
   }
 
   Future<void> connect() async {
     if (api == null || _paused) return;
     _retry?.cancel();
+    _ws?.close(); // never keep two event sockets (each would deliver every alert)
+    _ws = null;
     link = LinkState.connecting;
     notifyListeners();
     try {
       api!.activeHost = null;
       await refresh();
       final ws = await api!.socket('/api/events');
+      if (_paused) {
+        ws.close(); // the app went to the background while we were connecting
+        return;
+      }
       _ws = ws;
       link = LinkState.online;
       error = null;
       _backoff = 1;
       notifyListeners();
       setFocus(_focusPane);
-      ws.listen(_onEvent, onDone: _lost, onError: (_) => _lost(), cancelOnError: true);
+      // only the current socket's end counts: an old socket closing must not drop the live one
+      ws.listen(_onEvent, onDone: () {
+        if (_ws == ws) _lost();
+      }, onError: (_) {
+        if (_ws == ws) _lost();
+      }, cancelOnError: true);
     } catch (e) {
       error = '$e';
       _lost();
@@ -164,12 +176,12 @@ class Hub extends ChangeNotifier {
         final a = Alert.fromJson(m['alert'] as Map<String, dynamic>);
         alerts.insert(0, a);
         _alertCtrl.add(a);
-        refresh();
+        refresh().ignore();
         break;
       case 'status':
       case 'sessions':
       case 'alert_closed':
-        refresh();
+        refresh().ignore(); // a failed refresh is retried by the next event or reconnect
         break;
     }
   }

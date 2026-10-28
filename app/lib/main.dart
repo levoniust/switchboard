@@ -43,6 +43,7 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
   StreamSubscription<Uri>? _linkSub;
   late final AppLifecycleListener _life;
   String? _lastLink;
+  DateTime _lastLinkAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -61,8 +62,11 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
   /// Deep links: `switchboard://pair/PAYLOAD`, `alert/ID`, `answer/ID/KEY`, `session/PANE`, `vigil`.
   Future<void> _onLink(Uri uri) async {
     final s = uri.toString();
-    if (s == _lastLink) return; // the initial link can arrive twice
+    // the initial link can arrive twice; the same notification tapped again later must still work
+    final now = DateTime.now();
+    if (s == _lastLink && now.difference(_lastLinkAt) < const Duration(seconds: 2)) return;
     _lastLink = s;
+    _lastLinkAt = now;
     final parts = [uri.host, ...uri.pathSegments].where((p) => p.isNotEmpty).toList();
     if (parts.isEmpty) return;
     switch (parts.first) {
@@ -75,15 +79,16 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
         await _openAlert(int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0);
         break;
       case 'answer':
-        if (parts.length < 3) return;
+        final id = parts.length < 3 ? null : int.tryParse(parts[1]);
+        if (id == null) return toast('That link is damaged.');
         await _waitOnline();
         try {
-          final label = await hub.answer(int.parse(parts[1]), parts[2]);
+          final label = await hub.answer(id, parts[2]);
           toast('Answered: $label');
         } catch (e) {
           toast('Could not answer: $e');
         }
-        await _openAlert(int.parse(parts[1]));
+        await _openAlert(id);
         break;
       case 'session':
         await _waitOnline();

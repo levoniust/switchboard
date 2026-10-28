@@ -195,6 +195,7 @@ async def test_end_to_end(bridge_env):
             json.dump({"c1": time.time() + 60, "old": time.time() - 1}, open(os.path.join(home, "download-codes.json"), "w"))
             r = await c.get(base + "/get/c1", ssl=ctx)
             assert r.status == 200 and "switchboard://pair/" in await r.text()
+            assert r.headers.get("Cache-Control") == "no-store"
             assert (await c.get(base + "/get/c1", ssl=ctx)).status == 410
             assert (await c.get(base + "/get/c1/apk", ssl=ctx)).status == 200
             assert (await c.get(base + "/get/old", ssl=ctx)).status == 404
@@ -232,6 +233,17 @@ async def test_end_to_end(bridge_env):
                 except asyncio.TimeoutError:
                     pass
             assert b"sb-42" in seen
+            # a 20 KB paste arrives whole (the PTY takes ~4 KB at a time)
+            await ws.send_bytes(b": " + b"x" * 20000 + b"; echo big-$((6*7))\r")
+            seen, t0 = b"", time.time()
+            while b"big-42" not in seen and time.time() - t0 < 10:
+                try:
+                    m = await asyncio.wait_for(ws.receive(), 2)
+                    if m.data and isinstance(m.data, bytes):
+                        seen += m.data
+                except asyncio.TimeoutError:
+                    pass
+            assert b"big-42" in seen
             # while the phone views the chat, hooks from that pane must still count (grouped-session naming)
             r = await c.post(f"http://127.0.0.1:{cfg['hook_port']}/hook", headers={"X-Switchboard-Key": "hk"},
                              json={"_pane": pane, "hook_event_name": "UserPromptSubmit", "prompt": "hi"})
@@ -293,6 +305,15 @@ async def test_end_to_end(bridge_env):
             assert "GOT=2" in screen
             r = await c.post(base + f"/api/alerts/{aid}/answer", json={"key": "1"}, headers=H, ssl=ctx)
             assert r.status == 409  # can't answer twice
+
+            # a finished chat's "done" alert never presses keys, even with a dialog on screen
+            r = await c.post(hook, json={"_pane": pane, "_kind": "claude", "hook_event_name": "Stop"}, headers=hh)
+            done_id = (await r.json())["alert"]
+            assert done_id
+            r = await c.post(base + f"/api/alerts/{done_id}/answer", json={"key": "1"}, headers=H, ssl=ctx)
+            assert r.status == 409
+            r = await c.get(base + f"/api/sessions/{sid}/screen", params={"lines": "abc"}, headers=H, ssl=ctx)
+            assert r.status == 400
 
             # wrong hook key / foreign pane
             r = await c.post(hook, json={"_pane": pane}, headers={"X-Switchboard-Key": "bad"})

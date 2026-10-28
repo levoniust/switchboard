@@ -8,7 +8,7 @@ def main():
     if not pane:
         return
     try:
-        port, key = open(os.path.expanduser("~/.config/switchboard/hook.key")).read().split()
+        port, key = open(os.path.join(os.path.expanduser(os.environ.get("SWITCHBOARD_HOME", "~/.config/switchboard")), "hook.key")).read().split()
         ev = json.load(sys.stdin)
     except Exception:
         return

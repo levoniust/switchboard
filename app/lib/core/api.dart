@@ -113,7 +113,7 @@ class Api {
         req.write(jsonEncode(body));
       }
       final res = await req.close().timeout(const Duration(seconds: 15));
-      final text = await res.transform(utf8.decoder).join();
+      final text = await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 20));
       if (res.statusCode >= 400) {
         String msg = text;
         try {
@@ -167,7 +167,7 @@ class Api {
     req.add(bytes);
     req.add(utf8.encode('\r\n--$boundary--\r\n'));
     final res = await req.close().timeout(const Duration(seconds: 120));
-    final text = await res.transform(utf8.decoder).join();
+    final text = await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) throw ApiException(res.statusCode, text);
     return (jsonDecode(text) as Map)['path'] as String;
   }

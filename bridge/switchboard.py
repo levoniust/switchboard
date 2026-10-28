@@ -35,7 +35,7 @@ import sbcore  # noqa: E402
 from aiohttp import WSMsgType, web, ClientSession, ClientTimeout  # noqa: E402
 
 log = logging.getLogger("switchboard")
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 
 
 # ---------------------------------------------------------------- setup commands
@@ -56,12 +56,13 @@ def cmd_init(a):
         push.update(ha_url=a.ha_url, ha_notify=a.ha_notify, ha_token_file=a.ha_token_file or "~/.ha_token", enabled=True)
     if a.vigil_url:
         cfg["vigil_url"] = a.vigil_url
-    with open(path, "w") as f:
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         json.dump(cfg, f, indent=2)
-    os.chmod(path, 0o600)
-    with open(os.path.join(d, "hook.key"), "w") as f:
+    os.chmod(path, 0o600)  # an existing file keeps its old mode on open()
+    hook_key = os.path.join(d, "hook.key")
+    with os.fdopen(os.open(hook_key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(f"{cfg['hook_port']} {cfg['hook_key']}\n")
-    os.chmod(os.path.join(d, "hook.key"), 0o600)
+    os.chmod(hook_key, 0o600)
     cert, key = os.path.join(d, "cert.pem"), os.path.join(d, "key.pem")
     if not os.path.exists(cert) or a.new_cert:
         san = ",".join([f"IP:{h}" if h.replace(".", "").isdigit() else f"DNS:{h}" for h in hosts] + ["IP:127.0.0.1"])
@@ -110,8 +111,12 @@ def cmd_push(a):
         subprocess.run(["systemctl", "--user", "restart", "switchboard"], check=False)
         print(f"phone push {'ON' if push['enabled'] else 'OFF'} (bridge restarted)")
     elif a.state == "test":
-        ok = sbcore.ha_push(dict(push, enabled=True), {"id": 0, "type": "done", "title": "Test", "pane": "",
-                                                        "body": "Switchboard can reach your phone.", "session_name": "Switchboard"})
+        try:
+            ok = sbcore.ha_push(dict(push, enabled=True), {"id": 0, "type": "done", "title": "Test", "pane": "",
+                                                            "body": "Switchboard can reach your phone.",
+                                                            "session_name": "Switchboard"})
+        except OSError as e:  # token file missing, Home Assistant unreachable or refusing
+            sys.exit(f"push failed: {e}")
         print("sent" if ok else "not configured (ha_url / ha_notify missing)")
     else:
         print(f"phone push is {'ON' if push.get('enabled') else 'OFF'} via {push.get('ha_notify') or 'nothing'}")
@@ -154,6 +159,7 @@ class Bridge:
         self.sessions = sbcore.Sessions(self.store, on_alert=self._on_alert, on_change=self._on_change)
         self.clients = set()          # event websockets
         self.focus = {}               # ws -> pane the app is looking at (foreground)
+        self.answering = set()        # alert ids being answered right now
         self.loop = None
         self.http = None
         # a restart must not forget prompts that are still waiting for an answer
@@ -288,7 +294,7 @@ class Bridge:
 
     async def screen(self, request):
         w = self.window_for(request.match_info["sid"])
-        text = await asyncio.to_thread(self.tmux.capture, w["pane"], int(request.query.get("lines", 60)))
+        text = await asyncio.to_thread(self.tmux.capture, w["pane"], _int(request.query.get("lines"), 60, 1, 10000))
         return web.json_response({"text": text, "options": sbcore.parse_options(text)})
 
     async def list_alerts(self, request):
@@ -297,7 +303,7 @@ class Bridge:
         return web.json_response(rows)
 
     async def get_alert(self, request):
-        a = self.store.get(int(request.match_info["aid"]))
+        a = self.store.get(_int(request.match_info["aid"], 0, 0, 2**62))
         if not a:
             raise web.HTTPNotFound()
         if a["state"] == "open" and a["type"] in ("permission", "question") and a.get("pane"):
@@ -314,12 +320,21 @@ class Bridge:
 
     async def answer(self, request):
         """Answer a pending permission / question by pressing its number in the Claude Code dialog."""
-        a = self.store.get(int(request.match_info["aid"]))
+        a = self.store.get(_int(request.match_info["aid"], 0, 0, 2**62))
         if not a or not a.get("pane"):
             raise web.HTTPNotFound()
-        if a["state"] != "open":
+        if a["type"] not in ("permission", "question"):
+            # a "done" alert stays open until the next prompt; its pane may show a newer, unrelated dialog by now
+            return web.json_response({"ok": False, "error": "nothing to answer"}, status=409)
+        if a["state"] != "open" or a["id"] in self.answering:
             return web.json_response({"ok": False, "error": f"already {a['state']}"}, status=409)
-        body = await request.json()
+        self.answering.add(a["id"])  # two phones (or a retry) answering at once must press the key only once
+        try:
+            return await self._answer(a, await request.json())
+        finally:
+            self.answering.discard(a["id"])
+
+    async def _answer(self, a, body):
         key = str(body.get("key", ""))
         text = await asyncio.to_thread(self.tmux.capture, a["pane"])
         opts = sbcore.parse_options(text)
@@ -336,7 +351,7 @@ class Bridge:
         return web.json_response({"ok": True, "answered": label})
 
     async def ack_alert(self, request):
-        self.store.close(int(request.match_info["aid"]), state="seen")
+        self.store.close(_int(request.match_info["aid"], 0, 0, 2**62), state="seen")
         return web.json_response({"ok": True})
 
     def _safe_path(self, path):
@@ -359,16 +374,21 @@ class Bridge:
         os.makedirs(updir, exist_ok=True)
         reader = await request.multipart()
         field = await reader.next()
-        name = os.path.basename(field.filename or "upload.bin").replace(" ", "_")
+        if field is None or not getattr(field, "filename", None):
+            raise web.HTTPBadRequest(text="no file in the upload")
+        name = os.path.basename(field.filename).replace(" ", "_")
         path = os.path.join(updir, f"{time.strftime('%Y%m%d-%H%M%S')}-{name}")
         size = 0
-        with open(path, "wb") as f:
-            while chunk := await field.read_chunk():
-                size += len(chunk)
-                if size > 50 * 1024 * 1024:
-                    f.close(); os.unlink(path)
-                    raise web.HTTPRequestEntityTooLarge(max_size=50 * 1024 * 1024, actual_size=size)
-                f.write(chunk)
+        try:
+            with open(path, "wb") as f:
+                while chunk := await field.read_chunk():
+                    size += len(chunk)
+                    if size > 50 * 1024 * 1024:
+                        raise web.HTTPRequestEntityTooLarge(max_size=50 * 1024 * 1024, actual_size=size)
+                    f.write(chunk)
+        except BaseException:
+            os.unlink(path)  # too big, or the phone dropped mid-upload: no half files
+            raise
         return web.json_response({"path": path, "size": size})
 
     # ---- websockets
@@ -398,7 +418,7 @@ class Bridge:
                      {"drop", "keep", "tail", "w", "alt"} updates and lays it out natively."""
         w = self.window_for(request.match_info["sid"])
         mode = request.query.get("mode", "live")
-        cols, rows = int(request.query.get("cols", 80)), int(request.query.get("rows", 30))
+        cols, rows = _int(request.query.get("cols"), 80, 10, 1000), _int(request.query.get("rows"), 30, 5, 500)
         ws = web.WebSocketResponse(heartbeat=15, max_msg_size=4 * 1024 * 1024)
         await ws.prepare(request)
         peer = request.remote
@@ -433,8 +453,10 @@ class Bridge:
 
         def set_size(c, r):
             _winsize(mfd, int(c), int(r))
-            if proc.poll() is None:
+            try:
                 os.killpg(proc.pid, signal.SIGWINCH)
+            except ProcessLookupError:  # the tmux client just exited (window closed)
+                pass
 
         async def pump():
             while True:
@@ -490,17 +512,28 @@ class Bridge:
             if not ws.closed:
                 await ws.close()
 
+        async def write_all(data):
+            # the PTY takes only a few KB at a time: a big paste must wait for room instead of being cut off
+            view = memoryview(data)
+            while view:
+                try:
+                    view = view[os.write(mfd, view):]
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+                except OSError:
+                    return
+
         pump_task = asyncio.ensure_future(pump())
         side = {"fixed": follow_size, "reader": reader}.get(mode)
         side_task = asyncio.ensure_future(side()) if side else None
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
-                    os.write(mfd, msg.data)
+                    await write_all(msg.data)
                 elif msg.type == WSMsgType.TEXT:
                     m = json.loads(msg.data)
                     if "input" in m:
-                        os.write(mfd, m["input"].encode())
+                        await write_all(m["input"].encode())
                     if "resize" in m and mode == "live":
                         set_size(*m["resize"])
         finally:
@@ -532,9 +565,9 @@ class Bridge:
         hdrs = {k: v for k, v in request.headers.items() if k.lower() in ("content-type", "accept", "accept-language")}
         async with self.http.request(request.method, url, data=body or None, headers=hdrs, allow_redirects=False) as r:
             data = await r.read()
-            out = {k: v for k, v in r.headers.items() if k.lower() in ("content-type", "cache-control", "location")}
-            if "Location" in out and out["Location"].startswith("/"):
-                out["Location"] = "/vigil" + out["Location"]
+            out = {k.lower(): v for k, v in r.headers.items() if k.lower() in ("content-type", "cache-control", "location")}
+            if out.get("location", "").startswith("/"):
+                out["location"] = "/vigil" + out["location"]
             if r.headers.get("content-type", "").startswith("text/html"):
                 # root-relative links in Vigil's page must stay under /vigil/
                 data = data.replace(b'href="/', b'href="/vigil/').replace(b'src="/', b'src="/vigil/') \
@@ -570,7 +603,17 @@ class Bridge:
 (allow installs from your browser when Android asks).</p>
 <p>2. <a style="color:#7CFF8A" href="{link}">Pair this phone with {self.cfg['name']}</a> (opens the app).</p>
 <p style="color:#6a8">This page is a one-time link. Don't share it: step 2 contains the access key.</p></body>"""
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+def _int(value, default, lo, hi):
+    """A number from the request (query string or URL), clamped; anything else is a 400, not a 500."""
+    if value is None:
+        return default
+    try:
+        return max(lo, min(hi, int(value)))
+    except ValueError:
+        raise web.HTTPBadRequest(text=f"not a number: {value[:20]}")
 
 
 def _winsize(fd, cols, rows):

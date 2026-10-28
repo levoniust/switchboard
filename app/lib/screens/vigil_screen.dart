@@ -75,7 +75,9 @@ class LocalProxy {
 
   Future<void> _handle(HttpRequest req) async {
     final api = hub.api;
-    if (api == null || !req.uri.path.startsWith('/vigil/')) {
+    // only Vigil's pages go through (with the token): no "..", plain or %-encoded, to climb out to the bridge API
+    final raw = req.uri.path.toLowerCase();
+    if (api == null || !raw.startsWith('/vigil/') || raw.contains('..') || raw.contains('%2e')) {
       req.response.statusCode = 404;
       await req.response.close();
       return;
