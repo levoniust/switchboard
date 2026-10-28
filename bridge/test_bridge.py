@@ -203,6 +203,21 @@ async def test_end_to_end(bridge_env):
             pane = (await (await c.get(base + "/api/sessions", headers=H, ssl=ctx)).json())
             pane = next(s for s in pane if s["id"] == sid)["pane"]
 
+            # a window opened outside the app (e.g. from a laptop) reaches the phone's event socket
+            ev = await c.ws_connect(base + "/api/events", headers=H, ssl=ctx)
+            await asyncio.sleep(3.5)
+            subprocess.run(["tmux", "new-window", "-d", "-t", f"={sess}:", "-n", "laptop"], check=True)
+            got, t0 = [], time.time()
+            while "sessions" not in got and time.time() - t0 < 10:
+                try:
+                    m = await asyncio.wait_for(ev.receive(), 2)
+                    if isinstance(m.data, str):
+                        got.append(json.loads(m.data).get("type"))
+                except asyncio.TimeoutError:
+                    pass
+            assert "sessions" in got
+            await ev.close()
+
             # terminal over websocket: type a command, see its output
             ws = await c.ws_connect(base + f"/api/sessions/{sid}/term?cols=90&rows=25", headers=H, ssl=ctx)
             await asyncio.sleep(1.0)

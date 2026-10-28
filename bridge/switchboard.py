@@ -35,7 +35,7 @@ import sbcore  # noqa: E402
 from aiohttp import WSMsgType, web, ClientSession, ClientTimeout  # noqa: E402
 
 log = logging.getLogger("switchboard")
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 
 # ---------------------------------------------------------------- setup commands
@@ -187,6 +187,23 @@ class Bridge:
         for ws in list(self.clients):
             if not ws.closed:
                 asyncio.ensure_future(ws.send_str(data))
+
+    async def watch_windows(self, every=3.0):
+        # chats opened, closed or renamed outside the app (e.g. from a laptop) must show up on the phone too
+        last = None
+        while True:
+            await asyncio.sleep(every)
+            if not self.clients:
+                last = None
+                continue
+            try:
+                now = [(w["id"], w["name"]) for w in await asyncio.to_thread(self.tmux.windows)]
+            except Exception as e:  # tmux briefly unavailable: try again next round
+                log.debug("watch_windows: %s", e)
+                continue
+            if last is not None and now != last:
+                self.broadcast({"type": "sessions"})
+            last = now
 
     def _on_change(self, pane, st):
         if self.loop:
@@ -628,6 +645,7 @@ async def serve(cfg):
     await web.TCPSite(hook_runner, "127.0.0.1", cfg["hook_port"]).start()
     log.info("hooks on http://127.0.0.1:%s/hook", cfg["hook_port"])
 
+    asyncio.ensure_future(bridge.watch_windows())
     while True:
         await asyncio.sleep(3600)
         bridge.store.prune()

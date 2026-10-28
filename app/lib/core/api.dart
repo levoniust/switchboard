@@ -139,24 +139,34 @@ class Api {
     activeHost ??= await probe();
     if (activeHost == null) throw ApiException(0, 'Bridge not reachable (LAN or Tailscale)');
     final uri = Uri.parse('wss://$activeHost:${server.port}$path').replace(queryParameters: query);
-    final ws = await WebSocket.connect(uri.toString(),
-            headers: {HttpHeaders.authorizationHeader: 'Bearer ${server.token}'}, customClient: _http)
-        .timeout(const Duration(seconds: 8));
-    ws.pingInterval = const Duration(seconds: 20);
-    return ws;
+    try {
+      final ws = await WebSocket.connect(uri.toString(),
+              headers: {HttpHeaders.authorizationHeader: 'Bearer ${server.token}'}, customClient: _http)
+          .timeout(const Duration(seconds: 8));
+      ws.pingInterval = const Duration(seconds: 20);
+      return ws;
+    } on SocketException {
+      activeHost = null; // network changed (home <-> away): probe again next time
+      rethrow;
+    } on TimeoutException {
+      activeHost = null;
+      rethrow;
+    }
   }
 
   Future<String> upload(String filename, Uint8List bytes) async {
     activeHost ??= await probe();
+    if (activeHost == null) throw ApiException(0, 'Bridge not reachable (LAN or Tailscale)');
+    final safeName = filename.replaceAll(RegExp(r'["\r\n\\]'), '_');
     final boundary = 'sb${DateTime.now().microsecondsSinceEpoch}';
-    final req = await _http.postUrl(Uri.parse('$_base/api/upload'));
+    final req = await _http.postUrl(Uri.parse('$_base/api/upload')).timeout(const Duration(seconds: 6));
     req.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${server.token}');
     req.headers.set(HttpHeaders.contentTypeHeader, 'multipart/form-data; boundary=$boundary');
-    req.add(utf8.encode('--$boundary\r\nContent-Disposition: form-data; name="file"; filename="$filename"\r\n'
+    req.add(utf8.encode('--$boundary\r\nContent-Disposition: form-data; name="file"; filename="$safeName"\r\n'
         'Content-Type: application/octet-stream\r\n\r\n'));
     req.add(bytes);
     req.add(utf8.encode('\r\n--$boundary--\r\n'));
-    final res = await req.close();
+    final res = await req.close().timeout(const Duration(seconds: 120));
     final text = await res.transform(utf8.decoder).join();
     if (res.statusCode >= 400) throw ApiException(res.statusCode, text);
     return (jsonDecode(text) as Map)['path'] as String;

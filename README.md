@@ -14,6 +14,11 @@ Phone (Flutter app) ──WSS, pinned self-signed TLS, token──► switchboar
                                                               └─ optional reverse proxy for another LAN page (e.g. a dashboard)
 ```
 
+<p>
+  <img src="docs/screenshots/chats.png" width="270" alt="Chat list: two tmux chats on a demo machine">
+  <img src="docs/screenshots/reader.png" width="270" alt="Reader view: a test run re-flowed to the phone width, with the key bar above the keyboard">
+</p>
+
 ## What it does
 
 - **Two ways to read a chat.** The **Reader** (default) re-flows the chat's text natively on the phone: long lines
