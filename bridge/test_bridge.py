@@ -187,6 +187,17 @@ async def test_end_to_end(bridge_env):
         async with ClientSession() as c:
             r = await c.get(base + "/api/sessions", ssl=ctx)
             assert r.status == 401
+            r = await c.get(base + "/api/sessions", params={"token": "tök"}, ssl=ctx)
+            assert r.status == 401  # non-ASCII token: rejected, not a 500
+
+            # download link: the pairing page (it shows the token) opens once, the APK stays downloadable
+            open(os.path.join(home, "switchboard.apk"), "wb").write(b"apk")
+            json.dump({"c1": time.time() + 60, "old": time.time() - 1}, open(os.path.join(home, "download-codes.json"), "w"))
+            r = await c.get(base + "/get/c1", ssl=ctx)
+            assert r.status == 200 and "switchboard://pair/" in await r.text()
+            assert (await c.get(base + "/get/c1", ssl=ctx)).status == 410
+            assert (await c.get(base + "/get/c1/apk", ssl=ctx)).status == 200
+            assert (await c.get(base + "/get/old", ssl=ctx)).status == 404
             r = await c.post(base + "/api/sessions", json={"kind": "shell", "cwd": home, "name": "t1"}, headers=H, ssl=ctx)
             sid = (await r.json())["id"]
             pane = (await (await c.get(base + "/api/sessions", headers=H, ssl=ctx)).json())

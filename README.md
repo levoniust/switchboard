@@ -16,10 +16,15 @@ Phone (Flutter app) ──WSS, pinned self-signed TLS, token──► switchboar
 
 ## What it does
 
-- **It's still a CLI.** A real terminal (xterm) attached to the chat's tmux window, full colour, and the window
-  resizes to the phone every time you open it. A quick-key bar (Esc, Tab, Shift-Tab for modes, arrows, Ctrl-C, 1/2/3, …),
-  a multi-line **composer** (sent as one paste, keyboard voice input works), a **slash-command palette**, and
-  **photo upload**: the picture lands on the server and its path goes into your message.
+- **Two ways to read a chat.** The **Reader** (default) re-flows the chat's text natively on the phone: long lines
+  wrap to your screen, colours stay, you can select text, pinch to zoom, and rotating the phone never garbles anything.
+  The **raw terminal** (xterm) shows the exact tmux screen and scrolls sideways when it's wider than the phone. Neither
+  view resizes the real window, so a laptop attached to the same chat keeps its layout.
+- **A Termux-style key bar** above the keyboard: ESC, TAB, CTRL, ALT, arrows, HOME/END, PGUP/PGDN, Enter and more.
+  CTRL and ALT stay on for the next key (tap) or until you tap again (long-press), so CTRL then `c` sends Ctrl-C.
+  Swipe up on a key for its second symbol. Plus a multi-line **composer** (sent as one paste, keyboard voice input
+  works), a **slash-command palette**, and **photo upload**: the picture lands on the server and its path goes into
+  your message.
 - **Answer prompts with one tap.** When Claude asks for permission or uses its multiple-choice question tool, the
   bridge reads the real choices off the screen ("Yes / Yes, and always allow … / No") and shows them as buttons, on the
   chat list, in the chat, and in the alert. Tapping presses the matching number in the chat.
@@ -36,7 +41,7 @@ Phone (Flutter app) ──WSS, pinned self-signed TLS, token──► switchboar
 - **Skins.** *Terminal* (green phosphor, default), *Material 1* (2014 paper and shadows), *Starship* (a bridge
   console with elbows and pills), *Galactic* (hologram blue and crawl yellow), *Neon Night* (cyberpunk), *Amber CRT*.
   All are drawn in code with open-licensed fonts (OFL). **Mascot packs:** drop your own pictures and lines into
-  `app/assets/private/miko/` and three more skins appear (see below). That folder is git-ignored.
+  `app/assets/private/miko/` and up to four more skins appear (see below). That folder is git-ignored.
 
 ## Security model
 
@@ -61,8 +66,9 @@ sudo loginctl enable-linger $USER                          # keep it running aft
 switchboard pair                                           # pairing link + QR code
 ```
 
-`switchboard download-link` prints a one-time page (48 h) that offers the APK (copy a build to
-`~/.config/switchboard/switchboard.apk`) and the pairing link. `switchboard push on|off|test` controls phone push.
+`switchboard download-link` prints a link (valid 48 h) to a page that offers the APK (copy a build to
+`~/.config/switchboard/switchboard.apk`) and the pairing link. The page opens once, because it shows the access token; the APK link keeps working until
+the 48 h are up. `switchboard push on|off|test` controls phone push.
 
 A `claude-local` chat runs `bash -ic 'claude-local'`, so define `claude-local` as a shell function or alias, e.g. one
 that sets `ANTHROPIC_BASE_URL` to your local server and starts `claude`.
@@ -85,10 +91,10 @@ awake, because push comes through Home Assistant.
 
 ## Mascot packs (optional, private)
 
-Put `pro_<state>.webp`, `hood_<state>.webp` and `chibi_<state>.webp` (states: idle, working, done, permission,
-question, error, sleep; 384×384 works well) plus a `lines.json`
-(`{"pro": {"done": ["{session} is done."], ...}, "afterhours": {...}, "chibi": {...}}`) into
-`app/assets/private/miko/` and rebuild. The three mascot skins only show up when the pictures are present.
+Put `pro_<state>.webp`, `hood_<state>.webp`, `chibi_<state>.webp` and (for a dark chibi skin) `chibinight_<state>.webp`
+(states: idle, working, done, permission, question, error, sleep; 384×384 works well, transparent background for
+chibinight) plus a `lines.json` (`{"pro": {"done": ["{session} is done."], ...}, "afterhours": {...}, "chibi": {...}}`)
+into `app/assets/private/miko/` and rebuild. Each mascot skin only shows up when its pictures are present.
 
 ## Tests
 

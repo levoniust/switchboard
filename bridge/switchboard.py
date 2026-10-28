@@ -117,16 +117,27 @@ def cmd_push(a):
         print(f"phone push is {'ON' if push.get('enabled') else 'OFF'} via {push.get('ha_notify') or 'nothing'}")
 
 
+def load_codes(path):
+    # download codes: {code: {"exp": unix time, "page_seen": bool}} (older files stored just the expiry)
+    raw = json.load(open(path)) if os.path.exists(path) else {}
+    return {k: v if isinstance(v, dict) else {"exp": v, "page_seen": False} for k, v in raw.items()}
+
+
+def save_codes(path, codes):
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(codes, f)
+    os.replace(path + ".tmp", path)
+
+
 def cmd_download_link(a):
     cfg = sbcore.load_config()
     code = secrets.token_urlsafe(18)
     d = sbcore.config_dir()
     codes_path = os.path.join(d, "download-codes.json")
-    codes = json.load(open(codes_path)) if os.path.exists(codes_path) else {}
-    codes = {k: v for k, v in codes.items() if v > time.time()}
-    codes[code] = time.time() + 48 * 3600
-    json.dump(codes, open(codes_path, "w"))
-    os.chmod(codes_path, 0o600)
+    codes = {k: v for k, v in load_codes(codes_path).items() if v["exp"] > time.time()}
+    codes[code] = {"exp": time.time() + 48 * 3600, "page_seen": False}
+    save_codes(codes_path, codes)
     for h in cfg["hosts"]:
         print(f"https://{h}:{cfg['port']}/get/{code}")
     print("(one-time link, valid 48 h; the browser will warn about the self-signed certificate)")
@@ -154,7 +165,7 @@ class Bridge:
     def auth_ok(self, request):
         tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         tok = tok or request.query.get("token", "") or request.cookies.get("sb", "")
-        return secrets.compare_digest(tok, self.cfg["token"])
+        return secrets.compare_digest(tok.encode(), self.cfg["token"].encode())
 
     def window_for(self, wid):
         for w in self.tmux.windows():
@@ -199,7 +210,7 @@ class Bridge:
 
     # ---- hook listener (127.0.0.1 only)
     async def hook(self, request):
-        if request.headers.get("X-Switchboard-Key") != self.cfg["hook_key"]:
+        if not secrets.compare_digest(request.headers.get("X-Switchboard-Key", "").encode(), self.cfg["hook_key"].encode()):
             raise web.HTTPForbidden()
         ev = await request.json()
         pane = ev.pop("_pane", "") or ""
@@ -519,9 +530,10 @@ class Bridge:
     # ---- APK download + pairing page (one-time code)
     async def get_page(self, request):
         codes_path = os.path.join(self.dir, "download-codes.json")
-        codes = json.load(open(codes_path)) if os.path.exists(codes_path) else {}
+        codes = load_codes(codes_path)
         code = request.match_info["code"]
-        if codes.get(code, 0) < time.time():
+        entry = codes.get(code)
+        if not entry or entry["exp"] < time.time():
             raise web.HTTPNotFound()
         if request.match_info.get("what") == "apk":
             apk = os.path.join(self.dir, "switchboard.apk")
@@ -529,6 +541,11 @@ class Bridge:
                 raise web.HTTPNotFound(text="APK not built yet")
             return web.FileResponse(apk, headers={"Content-Disposition": "attachment; filename=switchboard.apk",
                                                   "Content-Type": "application/vnd.android.package-archive"})
+        # the pairing page carries the access token, so it is shown once; the APK stays downloadable until expiry
+        if entry["page_seen"]:
+            raise web.HTTPGone(text="This link was already used. Run `switchboard download-link` for a new one.")
+        codes[code] = {**entry, "page_seen": True}
+        save_codes(codes_path, codes)
         link = "switchboard://pair/" + pair_payload(self.cfg)
         html = f"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Switchboard</title><body style="font-family:monospace;background:#0b0f0c;color:#b8f5c0;padding:16px;line-height:1.5">
