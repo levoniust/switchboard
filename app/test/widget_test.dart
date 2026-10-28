@@ -33,7 +33,7 @@ void main() {
     for (final s in skins) {
       expect(s.theme, isNotNull);
     }
-    expect(skins.where((s) => s.isPrivate).length, 4);
+    expect(skins.where((s) => s.isPrivate).length, 5);
     expect(skinById('nope').id, 'cli');
   });
 }
