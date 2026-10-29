@@ -85,6 +85,113 @@ def test_screen_diff():
     assert apply(a, sbcore.screen_diff(a, [], scrolled=0)) == []
 
 
+def test_command_for_inline_screen():
+    for kind in ("claude", "claude-local"):
+        assert "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1" in sbcore.command_for(kind)
+    assert "ALTERNATE" not in sbcore.command_for("shell")
+
+
+def test_window_history_limit(bridge_env):
+    cfg, home, sess = bridge_env
+    t = sbcore.Tmux(session=sess)
+    t.ensure_session()
+    wid, pane = t.new_window("hl", home, "bash -l")
+    subprocess.run(["tmux", "send-keys", "-t", pane, "-l", "for i in $(seq 1 3000); do echo L$i; done"], check=True)
+    subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+    hist, t0 = 0, time.time()
+    while time.time() - t0 < 10:  # the pane must scroll past the old 2000-line default
+        info = t.pane_info(pane)
+        hist = (info or {}).get("hist", 0)
+        if hist > 2000:
+            break
+        time.sleep(0.3)
+    assert hist > 2000, f"scrollback stayed at {hist}: history-limit did not take effect"
+
+
+def test_full_keep_len_reconstructs():
+    """proto=2: window diffs applied to the full list via full_keep_len rebuild the real history,
+    the cap is kept, and the phone's list is always a true suffix of it."""
+    import random
+    rnd = random.Random(7)
+    depth, cap = 8, 40
+    H = [f"h{i}" for i in range(50)]
+    full, prev = list(H[-15:]), list(H[-depth:])
+    prev_start = max(0, len(H) - depth)
+    for _ in range(300):
+        r = rnd.random()
+        if r < 0.75:
+            H += [f"h{len(H)}" + ("x" * rnd.randint(0, 30)) for _ in range(rnd.randint(1, 3))]
+        elif r < 0.9:
+            H[-1] = "redraw " + "*" * rnd.randint(1, 5)  # the screen's last lines get rewritten
+        window = list(H[-depth:])
+        start = max(0, len(H) - depth)
+        if window != prev:
+            d = sbcore.screen_diff(prev, window, start - prev_start)
+            if not d["full"]:
+                keep = sbcore.full_keep_len(len(full), len(prev), d)
+                full = full[:keep] + d["tail"]
+                trim = max(0, len(full) - cap)
+                if trim:
+                    full = full[trim:]
+                assert full == H[len(H) - len(full):], f"step desynced: {full[-3:]} vs {H[-3:]}"
+                prev = window
+                prev_start = start
+    assert len(full) == cap and full == H[-cap:]
+
+
+@pytest.mark.asyncio
+async def test_reader_proto2_deep_history(bridge_env):
+    """A proto=2 Reader client gets the whole scrollback: more lines than the 2000-line window,
+    including the very first ones, after the pane produced 3000 lines."""
+    cfg, home, sess = bridge_env
+    import switchboard
+    from aiohttp import ClientSession
+    task = asyncio.ensure_future(switchboard.serve(sbcore.load_config()))
+    await asyncio.sleep(1.5)
+    base = f"https://127.0.0.1:{cfg['port']}"
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    H = {"Authorization": "Bearer tok"}
+
+    def apply(lines, m):
+        if m.get("full"):
+            return list(m["tail"])
+        if "keep_len" in m:
+            out = lines[:m["keep_len"]] + m["tail"]
+            return out[m["trim"]:] if m.get("trim") else out
+        return lines[m["drop"]:][:m["keep"]] + m["tail"]
+
+    try:
+        async with ClientSession() as c:
+            r = await c.post(base + "/api/sessions", json={"kind": "shell", "cwd": home, "name": "deep"},
+                             headers=H, ssl=ctx)
+            sid = (await r.json())["id"]
+            ws = await c.ws_connect(base + f"/api/sessions/{sid}/term?mode=reader&proto=2", headers=H, ssl=ctx)
+            m = json.loads((await asyncio.wait_for(ws.receive(), 5)).data)
+            assert m.get("full") and m.get("proto") == 2
+            lines = m["tail"]
+            subprocess.run(["tmux", "send-keys", "-t", f"={sess}:deep", "-l",
+                            "for i in $(seq 1 3000); do echo L$i; done"], check=True)
+            subprocess.run(["tmux", "send-keys", "-t", f"={sess}:deep", "Enter"], check=True)
+            seen_last, t0 = False, time.time()
+            while not seen_last and time.time() - t0 < 40:
+                try:
+                    m = await asyncio.wait_for(ws.receive(), 5)
+                except (asyncio.TimeoutError, Exception):
+                    break
+                if isinstance(m.data, str):
+                    d = json.loads(m.data)
+                    if "tail" not in d:
+                        continue
+                    lines = apply(lines, d)
+                    seen_last = any("L3000" in ln for ln in lines)
+            assert seen_last, "the last line never arrived"
+            assert len(lines) > 2100, f"only {len(lines)} lines: window-capped, deep history missing"
+            assert any(ln.strip() == "L1" for ln in lines), "the first line is not in the history"
+            await ws.close()
+    finally:
+        task.cancel()
+
+
 def test_state_machine_permission_then_done():
     s, store, alerts = _sessions()
     meta = {"pane": "%1", "window": "@1", "title": "claude", "kind": "claude"}

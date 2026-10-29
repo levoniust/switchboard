@@ -35,7 +35,7 @@ import sbcore  # noqa: E402
 from aiohttp import WSMsgType, web, ClientSession, ClientTimeout  # noqa: E402
 
 log = logging.getLogger("switchboard")
-VERSION = "1.1.2"
+VERSION = "1.2.0"
 
 
 # ---------------------------------------------------------------- setup commands
@@ -415,7 +415,9 @@ class Bridge:
         ?mode=fixed  the phone never resizes the window (tmux ignore-size); raw bytes stream back at the
                      window's own size, announced in {"size": [cols, rows]} text frames.
         ?mode=reader ignore-size too, but instead of raw bytes the app gets the chat's text as
-                     {"drop", "keep", "tail", "w", "alt"} updates and lays it out natively."""
+                     {"drop", "keep", "tail", "w", "alt"} updates and lays it out natively. With &proto=2
+                     it is seeded with the whole scrollback ({"full", "tail"}) and synced with
+                     {"keep_len", "tail", "trim"} updates — scroll back through the whole conversation."""
         w = self.window_for(request.match_info["sid"])
         mode = request.query.get("mode", "live")
         cols, rows = _int(request.query.get("cols"), 80, 10, 1000), _int(request.query.get("rows"), 30, 5, 500)
@@ -490,8 +492,27 @@ class Bridge:
                     await ws.send_str(json.dumps({"size": list(size)}))
 
         async def reader():
-            """reader mode: send the chat's text (scrollback + screen, colours kept) whenever it changes."""
+            """reader mode: send the chat's text (scrollback + screen, colours kept) whenever it changes.
+            ?proto=2  seed the phone with the WHOLE scrollback ({"full","tail"}), then keep it in sync with
+                      {"keep_len","tail","trim?"} ops on that full list, so the app can scroll back through
+                      the entire conversation. Without proto the old per-window {"drop","keep","tail"}
+                      updates (only the last `depth` lines) are sent, for old apps."""
+            proto2 = request.query.get("proto") == "2"
             depth, prev, prev_start, size, quiet = 2000, None, 0, (cols, rows), 0
+            full = None  # proto 2: the full line list the phone mirrors, kept at <= FULL_CAP
+
+            async def seed():
+                """(re)send the deep capture as the phone's starting point; window tracking starts fresh."""
+                nonlocal full, prev, prev_start
+                full = await asyncio.to_thread(self.tmux.snapshot, w["pane"], sbcore.DEEP_CAPTURE)
+                while len(full) > 20 and sum(map(len, full)) > 3_500_000:
+                    full.pop(0)  # stay under the websocket's 4 MB message cap
+                ii = await asyncio.to_thread(self.tmux.pane_info, w["pane"])
+                prev = await asyncio.to_thread(self.tmux.snapshot, w["pane"], depth)
+                prev_start = max(0, (ii or {}).get("hist", 0) - depth)
+                await ws.send_str(json.dumps({"full": True, "tail": full, "proto": 2,
+                                              "w": (ii or {}).get("w", cols), "alt": (ii or {}).get("alt", False)}))
+
             while not ws.closed:
                 i = await asyncio.to_thread(self.tmux.pane_info, w["pane"])
                 if i is None:
@@ -501,11 +522,28 @@ class Bridge:
                     set_size(*size)
                 lines = await asyncio.to_thread(self.tmux.snapshot, w["pane"], depth)
                 start = max(0, i["hist"] - depth)
-                if lines != prev:
+                if proto2 and (full is None or start < prev_start):
+                    await seed()  # first attach, or the history reset (/clear, pane restart)
+                elif lines != prev:
                     d = sbcore.screen_diff(prev, lines, start - prev_start)
                     d.update(w=i["w"], alt=i["alt"])
-                    await ws.send_str(json.dumps(d))
-                    prev, prev_start, quiet = lines, start, 0
+                    if proto2:
+                        if d["full"]:
+                            await seed()  # the whole window changed: resync from a deep capture
+                        else:
+                            keep = sbcore.full_keep_len(len(full), len(prev), d)
+                            full = full[:keep] + d["tail"]
+                            trim = max(0, len(full) - sbcore.FULL_CAP)
+                            if trim:
+                                full = full[trim:]
+                            msg = {"keep_len": keep, "tail": d["tail"], "w": i["w"], "alt": i["alt"]}
+                            if trim:
+                                msg["trim"] = trim
+                            await ws.send_str(json.dumps(msg))
+                            prev, prev_start, quiet = lines, start, 0
+                    else:
+                        await ws.send_str(json.dumps(d))
+                        prev, prev_start, quiet = lines, start, 0
                 else:
                     quiet += 1
                 await asyncio.sleep(0.15 if quiet < 10 else 0.5)

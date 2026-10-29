@@ -126,7 +126,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
     try {
       final ws = await hub.api!.socket(
         '/api/sessions/${Uri.encodeComponent(widget.sessionId)}/term',
-        query: {'mode': reader ? 'reader' : 'fixed', 'cols': '$_cols', 'rows': '$_rows'},
+        query: {'mode': reader ? 'reader' : 'fixed', 'cols': '$_cols', 'rows': '$_rows', if (reader) 'proto': '2'},
       );
       if (_closed || reader != _reader) {
         ws.close();
@@ -169,9 +169,20 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
       if (mounted) setState(() {});
     }
     if (m.containsKey('tail')) {
-      final drop = (m['drop'] as num).toInt(), keep = (m['keep'] as num).toInt();
-      final base = drop < _lines.length ? _lines.sublist(drop) : <String>[];
-      _lines = [...base.take(keep), ...(m['tail'] as List).cast<String>()];
+      final tail = (m['tail'] as List).cast<String>();
+      if (m['full'] == true) {
+        // proto 2 seed / resync: the whole scrollback as the starting point
+        _lines = tail;
+      } else if (m.containsKey('keep_len')) {
+        // proto 2: lines = (lines[:keep_len] + tail), then drop trim lines off the head
+        final kept = <String>[..._lines.take((m['keep_len'] as num).toInt()), ...tail];
+        final trim = (m['trim'] as num?)?.toInt() ?? 0;
+        _lines = trim > 0 ? (trim < kept.length ? kept.sublist(trim) : <String>[]) : kept;
+      } else {
+        final drop = (m['drop'] as num).toInt(), keep = (m['keep'] as num).toInt();
+        final base = drop < _lines.length ? _lines.sublist(drop) : <String>[];
+        _lines = [...base.take(keep), ...tail];
+      }
       _width = (m['w'] as num?)?.toInt() ?? _width;
       _alt = m['alt'] == true;
       if (mounted) setState(() {});

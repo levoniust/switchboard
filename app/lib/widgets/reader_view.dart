@@ -150,19 +150,61 @@ class _ReaderViewState extends State<ReaderView> {
   double? _pinchStart, _fontStart;
   bool _atBottom = true;
 
+  // the blocks only change with the content: don't rebuild them on every setState (pinch, FAB, skin...)
+  List<Block>? _blocks;
+  List<String>? _forLines;
+  int? _forWidth;
+  bool? _forJoin;
+
   @override
   void initState() {
     super.initState();
     scroll.addListener(() {
-      final b = !scroll.hasClients || scroll.offset < 40;
+      if (!scroll.hasClients) return;
+      final b = scroll.offset >= scroll.position.maxScrollExtent - 60;
       if (b != _atBottom) setState(() => _atBottom = b);
     });
+    // start at the newest (bottom)
+    WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom(instant: true));
+  }
+
+  @override
+  void didUpdateWidget(ReaderView old) {
+    super.didUpdateWidget(old);
+    // new text: stay pinned to the newest only if we were already there; scrolled-up readers keep their place
+    if (!identical(old.lines, widget.lines) && _atBottom) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _toBottom(instant: true);
+      });
+    }
   }
 
   @override
   void dispose() {
     scroll.dispose();
     super.dispose();
+  }
+
+  void _toBottom({bool instant = false}) {
+    if (!scroll.hasClients) return;
+    final m = scroll.position.maxScrollExtent;
+    if (instant) {
+      scroll.jumpTo(m);
+    } else {
+      scroll.animateTo(m, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+    }
+  }
+
+  List<Block> _blocksNow(TerminalTheme t) {
+    if (_blocks != null && identical(_forLines, widget.lines) && _forWidth == widget.width && _forJoin == widget.join) {
+      return _blocks!;
+    }
+    if (_cache.length > 60000) _cache.clear();
+    _blocks = buildBlocks(widget.lines, widget.width, widget.join, t, _cache);
+    _forLines = widget.lines;
+    _forWidth = widget.width;
+    _forJoin = widget.join;
+    return _blocks!;
   }
 
   double? _spread() {
@@ -188,8 +230,7 @@ class _ReaderViewState extends State<ReaderView> {
   @override
   Widget build(BuildContext context) {
     final t = widget.skin.term;
-    if (_cache.length > 6000) _cache.clear();
-    final blocks = buildBlocks(widget.lines, widget.width, widget.join, t, _cache);
+    final blocks = _blocksNow(t);
     final base = TextStyle(
         color: t.foreground,
         fontSize: widget.fontSize,
@@ -215,11 +256,10 @@ class _ReaderViewState extends State<ReaderView> {
         SelectionArea(
           child: ListView.builder(
             controller: scroll,
-            reverse: true, // newest at the bottom and stays there while new text streams in
             padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
             itemCount: blocks.length,
             itemBuilder: (context, i) {
-              final b = blocks[blocks.length - 1 - i];
+              final b = blocks[i];
               return switch (b) {
                 Rule() => Divider(height: widget.fontSize, thickness: 1, color: widget.skin.dim.withValues(alpha: 0.5)),
                 Boxed(:final lines) => Container(
@@ -248,7 +288,7 @@ class _ReaderViewState extends State<ReaderView> {
             child: FloatingActionButton.small(
               heroTag: null,
               tooltip: 'Jump to the newest',
-              onPressed: () => scroll.animateTo(0, duration: const Duration(milliseconds: 250), curve: Curves.easeOut),
+              onPressed: _toBottom,
               child: const Icon(Icons.keyboard_double_arrow_down),
             ),
           ),

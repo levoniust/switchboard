@@ -80,6 +80,10 @@ class Tmux:
         return r.stdout.strip() if r.returncode == 0 else ""
 
     def new_window(self, name, cwd, command):
+        # the default 2000-line scrollback is far too small for "scroll the whole chat". tmux only
+        # applies history-limit to windows created after the session option is set (verified 3.5a:
+        # setting it on an existing window leaves its history at the old size), so set it first.
+        self.run("set-window-option", "-t", f"={self.session}", "history-limit", "50000", check=False)
         out = self.run("new-window", "-d", "-P", "-F", "#{window_id}\t#{pane_id}", "-t", f"={self.session}:",
                        "-n", name, "-c", cwd, command)
         wid, pane = out.strip().split("\t")
@@ -141,11 +145,13 @@ class Tmux:
 
 
 def command_for(kind):
-    """Shell command a new chat window runs. Falls back to a shell when the program exits."""
+    """Shell command a new chat window runs. Falls back to a shell when the program exits.
+    Claude runs with the alternate screen disabled so its output scrolls into tmux history
+    and the app's Reader can scroll back through the whole conversation."""
     if kind == "claude":
-        return "bash -ic 'claude; exec bash'"
+        return "bash -ic 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude; exec bash'"
     if kind == "claude-local":
-        return "bash -ic 'claude-local; exec bash'"
+        return "bash -ic 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude-local; exec bash'"
     return "bash -l"
 
 
@@ -184,6 +190,19 @@ def _descendants(pid, depth=4):
 # ---------------------------------------------------------------- dialogs on screen
 
 OPTION_RE = re.compile(r"^\s*(?:❯\s*)?(\d)\.\s+(.+?)\s*$")
+
+
+# proto=2 (Reader deep history): seed the phone with the whole scrollback, then keep it in sync
+# with window diffs. DEEP = how many lines the seed captures, FULL_CAP = what the phone keeps.
+DEEP_CAPTURE = 40000
+FULL_CAP = 60000
+
+
+def full_keep_len(full_len, prev_len, d):
+    """proto=2: a window diff d was computed against a window of prev_len lines that sits at the
+    tail of the phone's full list of full_len lines. Returns how many head lines of the full list
+    survive: lines = lines[:keep_len] + d['tail'] (then [trim:] if the caller trims the cap)."""
+    return full_len - (prev_len - d["drop"] - d["keep"])
 
 
 def screen_diff(prev, new, scrolled=0):
