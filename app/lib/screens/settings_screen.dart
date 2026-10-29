@@ -128,7 +128,7 @@ class SettingsScreen extends StatelessWidget {
           _section(skin, 'About'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text('Switchboard 1.0 · a phone switchboard for Claude Code and claude-local.\n'
+            child: Text('Switchboard 1.2.0 · a phone switchboard for Claude Code and claude-local.\n'
                 'Fonts: JetBrains Mono, Roboto, Antonio, Orbitron, Rajdhani, Share Tech Mono, VT323 (SIL OFL).',
                 style: TextStyle(color: skin.dim, fontSize: 12)),
           ),
