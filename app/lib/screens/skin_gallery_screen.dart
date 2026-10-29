@@ -52,7 +52,7 @@ class _SkinGalleryScreenState extends State<SkinGalleryScreen> {
               child: entries.isEmpty
                   ? Center(child: Text('No pictures bundled for this skin.', style: TextStyle(color: skin.dim)))
                   : GridView.builder(
-                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+                      padding: EdgeInsets.fromLTRB(12, 4, 12, 24 + MediaQuery.paddingOf(context).bottom),
                       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 220, childAspectRatio: 0.62, mainAxisSpacing: 12, crossAxisSpacing: 12),
                       itemCount: entries.length,
                       itemBuilder: (context, i) => _tile(context, entries, i),
@@ -134,7 +134,7 @@ class _PictureViewerState extends State<_PictureViewer> {
           onPageChanged: (i) => setState(() => _at = i),
           itemBuilder: (_, i) => InteractiveViewer(
             maxScale: 5,
-            child: Center(child: Hero(tag: widget.entries[i].value, child: Image.asset(widget.entries[i].value, fit: BoxFit.contain))),
+            child: SizedBox.expand(child: Hero(tag: widget.entries[i].value, child: Image.asset(widget.entries[i].value, fit: BoxFit.contain))),
           ),
         ),
         SafeArea(
