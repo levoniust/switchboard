@@ -82,6 +82,18 @@ void main() {
     expect(buildBlocks(lines.take(2).toList(), w, false, t).length, 2);
   });
 
+  test('reader join: no gap from trailing padding, long next word counts as a wrap', () {
+    final w = 40;
+    // capture-pane -J keeps the spaces after the last word the CLI wrote on a wrapped row
+    final padded = buildBlocks(["● It works, and I won't change the${' ' * 6}", '  rest of the job.'], w, true, t);
+    expect(padded.map(text).toList(), ["● It works, and I won't change the rest of the job."]);
+    // 22 chars, but the next word (a 20-char path) could not fit, so the CLI wrapped early
+    final early = buildBlocks(['● open the file named', '  /very/long/path/xyz then save.'], w, true, t);
+    expect(early.map(text).toList(), ['● open the file named /very/long/path/xyz then save.']);
+    // a short line followed by a short word is a real line break
+    expect(buildBlocks(['● done.', '  next'], w, true, t).length, 2);
+  });
+
   testWidgets('extra keys: two full rows, CTRL then a key sends ctrl code', (tester) async {
     final sent = <String>[];
     final mods = Modifiers();

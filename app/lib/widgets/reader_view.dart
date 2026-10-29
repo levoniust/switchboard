@@ -56,15 +56,32 @@ List<Block> buildBlocks(List<String> lines, int width, bool join, TerminalTheme 
     }
     final runs = runsOf(line);
     final indent = p.length - p.trimLeft().length;
-    final wrapped = join && tr.isNotEmpty && prevLen >= width - 12 && width > 20 && !_listStart.hasMatch(tr) && out.isNotEmpty;
+    // the CLI word-wraps: the line before ran to (nearly) the edge, or this line's first word would not have fit there
+    final firstWord = tr.split(' ').first.length;
+    final full = prevLen >= width - 12 || prevLen + 1 + firstWord > width - 2;
+    final wrapped = join && tr.isNotEmpty && prevLen > 0 && full && width > 20 && !_listStart.hasMatch(tr) && out.isNotEmpty;
     if (wrapped && out.last is Para) {
       final last = out.last as Para;
       final rest = _dropLeading(runs, indent);
-      out[out.length - 1] = Para([...last.runs, const Run(' '), ...rest]);
+      // capture-pane -J keeps the padding after the last word; without trimming it the joined text shows a gap
+      out[out.length - 1] = Para([..._trimEnd(last.runs), const Run(' '), ...rest]);
     } else {
       out.add(Para(runs));
     }
     prevLen = p.trimRight().length;
+  }
+  return out;
+}
+
+List<Run> _trimEnd(List<Run> runs) {
+  final out = [...runs];
+  while (out.isNotEmpty) {
+    final t = out.last.text.trimRight();
+    if (t.isNotEmpty) {
+      out[out.length - 1] = out.last.withText(t);
+      break;
+    }
+    out.removeLast();
   }
   return out;
 }
