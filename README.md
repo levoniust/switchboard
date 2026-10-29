@@ -100,6 +100,8 @@ Put `pro_<state>.webp`, `hood_<state>.webp`, `chibi_<state>.webp` and (for a dar
 (states: idle, working, done, permission, question, error, sleep; 384×384 works well, transparent background for
 chibinight) plus a `lines.json` (`{"pro": {"done": ["{session} is done."], ...}, "afterhours": {...}, "chibi": {...}}`)
 into `app/assets/private/miko/` and rebuild. Each mascot skin only shows up when its pictures are present.
+**Settings → Skin → View pictures** (or long-press a mascot tile) shows every picture a skin uses. To make your own
+colour or mascot skin, see [docs/CUSTOM-SKINS.md](docs/CUSTOM-SKINS.md).
 
 ## Tests
 

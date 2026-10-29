@@ -89,14 +89,24 @@ class Settings extends ChangeNotifier {
   }
 
   /// Picture for the Miko mascot in [state] (idle/working/done/permission/question/error/sleep), or null.
+  static const mikoStates = ['idle', 'working', 'question', 'permission', 'done', 'error', 'sleep'];
+
+  static String _mikoPrefix(MikoSet set) => const {MikoSet.pro: 'pro', MikoSet.hood: 'hood', MikoSet.chibi: 'chibi', MikoSet.chibiNight: 'chibinight', MikoSet.chibiCozy: 'chibicozy', MikoSet.lateNight: 'latenight'}[set]!;
+
   String? mikoImage(MikoSet set, String state) {
-    final prefix = {MikoSet.pro: 'pro', MikoSet.hood: 'hood', MikoSet.chibi: 'chibi', MikoSet.chibiNight: 'chibinight', MikoSet.chibiCozy: 'chibicozy', MikoSet.lateNight: 'latenight'}[set]!;
+    final prefix = _mikoPrefix(set);
     final s = _mascotState(state);
     for (final cand in ['assets/private/miko/${prefix}_$s.webp', 'assets/private/miko/${prefix}_idle.webp']) {
       if (assets.contains(cand)) return cand;
     }
     return null;
   }
+
+  /// The pictures actually bundled for [set], state → asset path, in [mikoStates] order (no idle fallbacks).
+  Map<String, String> mikoPictures(MikoSet set) => {
+        for (final s in mikoStates)
+          if (assets.contains('assets/private/miko/${_mikoPrefix(set)}_$s.webp')) s: 'assets/private/miko/${_mikoPrefix(set)}_$s.webp',
+      };
 
   /// One of Miko's lines for [state], in the voice of the skin's Miko set.
   String? mikoLine(MikoSet set, String state, {String session = 'that chat'}) {

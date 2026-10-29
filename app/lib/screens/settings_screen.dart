@@ -5,6 +5,7 @@ import '../main.dart';
 import '../skins/chrome.dart';
 import '../skins/skins.dart';
 import 'pair_screen.dart';
+import 'skin_gallery_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -28,6 +29,18 @@ class SettingsScreen extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
             child: Text(skin.blurb, style: TextStyle(color: skin.dim, fontSize: 13)),
           ),
+          if (skin.miko != null && settings.mikoPictures(skin.miko!).isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: Icon(Icons.photo_library_outlined, color: skin.accent),
+                  label: Text('View pictures (${settings.mikoPictures(skin.miko!).length})', style: TextStyle(color: skin.accent)),
+                  onPressed: () => _openGallery(context, skin),
+                ),
+              ),
+            ),
           _section(skin, 'Terminal text'),
           Row(children: [
             const SizedBox(width: 16),
@@ -130,6 +143,9 @@ class SettingsScreen extends StatelessWidget {
       );
 }
 
+void _openGallery(BuildContext context, Skin s) =>
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => SkinGalleryScreen(skin: s)));
+
 class _SkinTile extends StatelessWidget {
   final Skin s;
   final bool selected;
@@ -140,6 +156,8 @@ class _SkinTile extends StatelessWidget {
     final img = s.miko != null ? settings.mikoImage(s.miko!, 'idle') : null;
     return GestureDetector(
       onTap: () => settings.setSkin(s.id),
+      // long-press a mascot skin to see its pictures without switching to it
+      onLongPress: s.miko == null ? null : () => _openGallery(context, s),
       child: Container(
         width: 116,
         margin: const EdgeInsets.all(6),
