@@ -5,8 +5,8 @@ import 'package:xterm/xterm.dart';
 enum SkinStyle { cli, material1, starship, galactic, cyberpunk, crt, miko }
 
 /// Mascot variant. The pictures and lines live in assets/private/miko/ (not in the public repo):
-/// `<pro|hood|chibi|chibinight|latenight>_<idle|working|done|permission|question|error|sleep>.webp` + `lines.json`.
-enum MikoSet { pro, hood, chibi, chibiNight, lateNight }
+/// `<pro|hood|chibi|chibinight|chibicozy|latenight>_<idle|working|done|permission|question|error|sleep>.webp` + `lines.json`.
+enum MikoSet { pro, hood, chibi, chibiNight, chibiCozy, lateNight }
 
 class Skin {
   final String id, name, blurb;
@@ -235,6 +235,16 @@ final skins = <Skin>[
     bands: const [Color(0xFFFF8FB1), Color(0xFFA9C97A), Color(0xFFF7D08A)],
     uiFont: 'Roboto', termFont: _mono, headFont: 'Roboto', radius: 24,
     term: _term(bg: const Color(0xFF150F19), fg: const Color(0xFFFFF0F5), cursor: const Color(0xFFFF8FB1)),
+  ),
+  Skin(
+    id: 'miko_chibi_cozy', name: 'Chibi Miko After Hours', blurb: 'Mascot pack: chibi, after hours. Hoodie, PJs, fuzzy socks.',
+    style: SkinStyle.miko, brightness: Brightness.dark, miko: MikoSet.chibiCozy,
+    bg: const Color(0xFF141618), surface: const Color(0xFF1F2327), fg: const Color(0xFFE6E8EA),
+    dim: const Color(0xFF858B92), accent: const Color(0xFF39FF6A), accent2: const Color(0xFFC9586A),
+    danger: const Color(0xFFFF6B5B), ok: const Color(0xFF39FF6A),
+    bands: const [Color(0xFF8A9096), Color(0xFF39FF6A), Color(0xFFC9586A)],
+    uiFont: 'Roboto', termFont: _mono, headFont: 'Roboto', radius: 24,
+    term: _term(bg: const Color(0xFF0E1012), fg: const Color(0xFFDDE1E5), cursor: const Color(0xFF39FF6A)),
   ),
   Skin(
     id: 'miko_latenight', name: 'Miko Late Night', blurb: 'Mascot pack: late night. Wine velvet, candlelight and a wink.',

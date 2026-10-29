@@ -90,7 +90,7 @@ class Settings extends ChangeNotifier {
 
   /// Picture for the Miko mascot in [state] (idle/working/done/permission/question/error/sleep), or null.
   String? mikoImage(MikoSet set, String state) {
-    final prefix = {MikoSet.pro: 'pro', MikoSet.hood: 'hood', MikoSet.chibi: 'chibi', MikoSet.chibiNight: 'chibinight', MikoSet.lateNight: 'latenight'}[set]!;
+    final prefix = {MikoSet.pro: 'pro', MikoSet.hood: 'hood', MikoSet.chibi: 'chibi', MikoSet.chibiNight: 'chibinight', MikoSet.chibiCozy: 'chibicozy', MikoSet.lateNight: 'latenight'}[set]!;
     final s = _mascotState(state);
     for (final cand in ['assets/private/miko/${prefix}_$s.webp', 'assets/private/miko/${prefix}_idle.webp']) {
       if (assets.contains(cand)) return cand;
@@ -100,7 +100,7 @@ class Settings extends ChangeNotifier {
 
   /// One of Miko's lines for [state], in the voice of the skin's Miko set.
   String? mikoLine(MikoSet set, String state, {String session = 'that chat'}) {
-    final voice = {MikoSet.pro: 'pro', MikoSet.hood: 'afterhours', MikoSet.chibi: 'chibi', MikoSet.chibiNight: 'chibi', MikoSet.lateNight: 'latenight'}[set]!;
+    final voice = {MikoSet.pro: 'pro', MikoSet.hood: 'afterhours', MikoSet.chibi: 'chibi', MikoSet.chibiNight: 'chibi', MikoSet.chibiCozy: 'afterhours', MikoSet.lateNight: 'latenight'}[set]!;
     final list = ((mikoLines[voice] as Map?)?[_lineState(state)] as List?)?.cast<String>();
     if (list == null || list.isEmpty) return null;
     return list[Random().nextInt(list.length)].replaceAll('{session}', session);
