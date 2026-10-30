@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../core/api.dart';
 import '../main.dart';
@@ -6,6 +7,9 @@ import '../skins/chrome.dart';
 import '../skins/skins.dart';
 import 'pair_screen.dart';
 import 'skin_gallery_screen.dart';
+
+/// The real version from the built bundle, so About can never drift behind the APK again.
+final _pkgInfo = PackageInfo.fromPlatform();
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -128,9 +132,14 @@ class SettingsScreen extends StatelessWidget {
           _section(skin, 'About'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text('Switchboard 1.2.0 · a phone switchboard for Claude Code and claude-local.\n'
+            child: FutureBuilder<PackageInfo>(
+              future: _pkgInfo,
+              builder: (context, s) => Text(
+                'Switchboard ${s.data == null ? '' : '${s.data!.version}+${s.data!.buildNumber}'} '
+                '· a phone switchboard for Claude Code and claude-local.\n'
                 'Fonts: JetBrains Mono, Roboto, Antonio, Orbitron, Rajdhani, Share Tech Mono, VT323 (SIL OFL).',
                 style: TextStyle(color: skin.dim, fontSize: 12)),
+            ),
           ),
         ]);
       },
