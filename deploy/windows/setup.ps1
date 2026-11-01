@@ -24,9 +24,16 @@ $drive = (Split-Path -Qualifier $Root).TrimEnd(':')
 $freeGB = [math]::Round((Get-PSDrive $drive).Free / 1GB, 1)
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vcComponent = if ($arm) { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
+# ATL: flutter_secure_storage_windows + flutter_local_notifications_windows include atlbase.h/atlstr.h
+$atlComponent = if ($arm) { 'Microsoft.VisualStudio.Component.VC.ATL.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.ATL' }
+$vsComponents = @($vcComponent, 'Microsoft.VisualStudio.Component.VC.ATL', $atlComponent) | Select-Object -Unique
 function Test-VS {
   if (-not (Test-Path $vswhere)) { return $false }
-  [bool](& $vswhere -products * -requires $vcComponent -property installationPath)
+  [bool](& $vswhere -products * -requires $vsComponents -property installationPath)
+}
+function Get-VSPath {
+  if (-not (Test-Path $vswhere)) { return $null }
+  & $vswhere -products * -requires $vcComponent -property installationPath | Select-Object -First 1
 }
 
 Write-Host "CPU: $env:PROCESSOR_ARCHITECTURE   free on ${drive}: $freeGB GB"
@@ -67,17 +74,24 @@ foreach ($p in "$Root\mingit\cmd", "$Root\flutter\bin") {
 
 # --- Visual Studio Build Tools (C++ desktop). Needs an elevated (admin) session.
 if (-not (Test-VS)) {
-  Write-Host 'Installing Visual Studio 2022 Build Tools (C++), this takes a while'
-  Invoke-WebRequest 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile "$tmp\vs_buildtools.exe"
-  $vsArgs = @('--quiet', '--wait', '--norestart', '--nocache',
-            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
-            '--add', $vcComponent,
-            '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621',
-            '--includeRecommended')
-  $p = Start-Process "$tmp\vs_buildtools.exe" -ArgumentList $vsArgs -Wait -PassThru
+  $adds = @('--add', 'Microsoft.VisualStudio.Workload.VCTools') + ($vsComponents | ForEach-Object { '--add', $_ }) +
+          @('--add', 'Microsoft.VisualStudio.Component.Windows11SDK.22621')
+  $existing = Get-VSPath
+  if ($existing) {
+    # Build Tools already there but missing a component (e.g. ATL): modify in place
+    Write-Host "Adding missing C++ components to $existing"
+    $vsArgs = @('modify', '--installPath', "`"$existing`"", '--quiet', '--norestart') + $adds
+    $p = Start-Process "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" -ArgumentList $vsArgs -Wait -PassThru
+  } else {
+    Write-Host 'Installing Visual Studio 2022 Build Tools (C++), this takes a while'
+    Invoke-WebRequest 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile "$tmp\vs_buildtools.exe"
+    $vsArgs = @('--quiet', '--wait', '--norestart', '--nocache') + $adds + @('--includeRecommended')
+    $p = Start-Process "$tmp\vs_buildtools.exe" -ArgumentList $vsArgs -Wait -PassThru
+  }
   # 3010 = installed, restart recommended
   if ($p.ExitCode -notin 0, 3010) { throw "Build Tools installer failed: exit $($p.ExitCode)" }
   if ($p.ExitCode -eq 3010) { Write-Host 'Build Tools installed (Windows asks for a restart when convenient)' }
+  if (-not (Test-VS)) { throw 'Build Tools still missing a C++ component after install' }
 }
 
 flutter config --no-analytics | Out-Null
