@@ -43,6 +43,7 @@ class _VigilScreenState extends State<VigilScreen> {
       final c = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(settings.skin.bg)
+        ..setNavigationDelegate(NavigationDelegate(onNavigationRequest: _onNavigation))
         ..loadRequest(Uri.parse('http://127.0.0.1:$port/vigil/'));
       setState(() => _web = c);
     } catch (e) {
@@ -70,6 +71,19 @@ class _VigilScreenState extends State<VigilScreen> {
           Text('The page works while Switchboard is running.', style: TextStyle(color: skin.dim, fontSize: 12)),
         ]),
       );
+
+  /// Vigil itself stays in the WebView; its links to lab services (plain http on the home network, reachable away
+  /// from home over Tailscale's subnet route) open in the phone's browser: the WebView refuses cleartext pages.
+  NavigationDecision _onNavigation(NavigationRequest req) {
+    final uri = Uri.tryParse(req.url);
+    if (uri == null || uri.host == '127.0.0.1' || !(uri.isScheme('http') || uri.isScheme('https'))) {
+      return NavigationDecision.navigate;
+    }
+    launchUrl(uri, mode: LaunchMode.externalApplication).then((ok) {
+      if (!ok) toast('Could not open ${uri.host}');
+    });
+    return NavigationDecision.prevent;
+  }
 
   @override
   Widget build(BuildContext context) {
