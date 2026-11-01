@@ -36,7 +36,12 @@ if ($NoInstall) { return }
 
 $dest = "$env:LOCALAPPDATA\Programs\Switchboard"
 Get-Process switchboard -ErrorAction SilentlyContinue | Stop-Process -Force   # replace a running copy
-if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+# Windows releases the DLL locks a moment after the process exits: retry instead of failing half-deleted
+for ($i = 0; (Test-Path $dest) -and $i -lt 10; $i++) {
+  Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+  if (Test-Path $dest) { Start-Sleep -Seconds 1 }
+}
+if (Test-Path $dest) { throw "Could not replace $dest (is Switchboard still open?)" }
 Copy-Item -Recurse $out $dest
 
 # Start menu + desktop shortcuts
