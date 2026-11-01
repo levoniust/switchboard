@@ -39,7 +39,7 @@ Get-Process switchboard -ErrorAction SilentlyContinue | Stop-Process -Force   # 
 if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
 Copy-Item -Recurse $out $dest
 
-# Start menu + desktop (GetFolderPath follows a OneDrive-redirected Desktop)
+# Start menu + desktop shortcuts
 $links = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Switchboard.lnk",
          (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Switchboard.lnk')
 foreach ($lnk in $links) {
