@@ -39,10 +39,14 @@ Get-Process switchboard -ErrorAction SilentlyContinue | Stop-Process -Force   # 
 if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
 Copy-Item -Recurse $out $dest
 
-$lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Switchboard.lnk"
-$sh = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-$sh.TargetPath = "$dest\switchboard.exe"
-$sh.WorkingDirectory = $dest
-$sh.Description = 'Switchboard: Claude Code chats on Powerhouse'
-$sh.Save()
-Write-Host "Installed: $dest (Start menu: Switchboard)"
+# Start menu + desktop (GetFolderPath follows a OneDrive-redirected Desktop)
+$links = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Switchboard.lnk",
+         (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Switchboard.lnk')
+foreach ($lnk in $links) {
+  $sh = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+  $sh.TargetPath = "$dest\switchboard.exe"
+  $sh.WorkingDirectory = $dest
+  $sh.Description = 'Switchboard: Claude Code chats on Powerhouse'
+  $sh.Save()
+}
+Write-Host "Installed: $dest (shortcuts: Start menu + desktop)"
