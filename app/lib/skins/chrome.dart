@@ -271,7 +271,7 @@ class SkinPanel extends StatelessWidget {
       case SkinStyle.material1:
         return Card(
           clipBehavior: Clip.antiAlias,
-          child: InkWell(onTap: onTap, onLongPress: onLongPress,
+          child: InkWell(onTap: onTap, onLongPress: onLongPress, onSecondaryTap: onLongPress,
               child: Row(children: [Container(width: 4, height: 72, color: c), Expanded(child: inner)])),
         );
       case SkinStyle.starship:
@@ -319,7 +319,7 @@ class SkinPanel extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       child: Material(
         type: MaterialType.transparency,
-        child: InkWell(onTap: onTap, onLongPress: onLongPress, borderRadius: BorderRadius.circular(skin.radius), child: box),
+        child: InkWell(onTap: onTap, onLongPress: onLongPress, onSecondaryTap: onLongPress, borderRadius: BorderRadius.circular(skin.radius), child: box),
       ),
     );
   }

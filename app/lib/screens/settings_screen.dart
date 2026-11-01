@@ -175,6 +175,7 @@ class _SkinTile extends StatelessWidget {
       onTap: () => settings.setSkin(s.id),
       // long-press a mascot skin to see its pictures without switching to it
       onLongPress: s.miko == null ? null : () => _openGallery(context, s),
+      onSecondaryTap: s.miko == null ? null : () => _openGallery(context, s), // right-click = long-press
       child: Container(
         width: 116,
         margin: const EdgeInsets.all(6),

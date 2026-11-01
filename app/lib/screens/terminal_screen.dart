@@ -54,6 +54,7 @@ class TerminalScreen extends StatefulWidget {
 class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObserver {
   final terminal = Terminal(maxLines: 5000);
   final termCtrl = TerminalController();
+  final _termKey = GlobalKey<TerminalViewState>();
   final composer = TextEditingController();
   final composerFocus = FocusNode();
   final catcherFocus = FocusNode();
@@ -564,6 +565,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
             height: box.maxHeight,
             child: TerminalView(
               terminal,
+              key: _termKey,
               controller: termCtrl,
               theme: skin.term,
               textStyle: TerminalStyle(
@@ -577,6 +579,8 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
               readOnly: true, // typing goes through the KeyCatcher (handles Samsung arrows, Enter, CTRL)
               hardwareKeyboardOnly: true,
               onTapUp: (_, _) => _showKeyboard(),
+              // right-click selects the word under the pointer, like a long-press does on touch
+              onSecondaryTapDown: (d, _) => _termKey.currentState?.renderTerminal.selectWord(d.localPosition),
             ),
           ),
         );

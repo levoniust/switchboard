@@ -75,6 +75,7 @@ class ExtraKeys extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: () => _press(context, k),
       onLongPress: k.mod != null ? () => mods.lock(k.mod!) : null,
+      onSecondaryTap: k.mod != null ? () => mods.lock(k.mod!) : null, // right-click = long-press
       onVerticalDragStart: (_) => swiped = false,
       onVerticalDragUpdate: (d) {
         if (!swiped && d.localPosition.dy < -12) {
