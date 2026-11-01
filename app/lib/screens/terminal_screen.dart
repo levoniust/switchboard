@@ -10,6 +10,7 @@ import 'package:xterm/xterm.dart';
 import '../core/ansi.dart';
 import '../core/hub.dart';
 import '../core/keys.dart';
+import '../core/platform.dart';
 import '../main.dart';
 import '../skins/chrome.dart';
 import '../skins/mascot.dart';
@@ -421,28 +422,29 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
                       _reconnect();
                   }
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
                     value: 'photo',
                     child: ListTile(leading: Icon(Icons.image_outlined), title: Text('Attach a picture')),
                   ),
-                  PopupMenuItem(
-                    value: 'camera',
-                    child: ListTile(leading: Icon(Icons.photo_camera_outlined), title: Text('Take a photo')),
-                  ),
-                  PopupMenuItem(
+                  if (isPhone) // a computer has no camera picker: pictures come from files
+                    const PopupMenuItem(
+                      value: 'camera',
+                      child: ListTile(leading: Icon(Icons.photo_camera_outlined), title: Text('Take a photo')),
+                    ),
+                  const PopupMenuItem(
                     value: 'copy',
                     child: ListTile(leading: Icon(Icons.copy), title: Text('Copy')),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'bigger',
                     child: ListTile(leading: Icon(Icons.text_increase), title: Text('Bigger text')),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'smaller',
                     child: ListTile(leading: Icon(Icons.text_decrease), title: Text('Smaller text')),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'reconnect',
                     child: ListTile(leading: Icon(Icons.refresh), title: Text('Reconnect / redraw')),
                   ),
@@ -502,7 +504,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
                 Expanded(child: _reader ? _readerBody(skin) : _terminalBody(skin)),
                 if (_reader || _showComposer) _inputBar(skin),
                 if (!_reader) KeyCatcher(focusNode: catcherFocus, mods: mods, onKey: _send),
-                ExtraKeys(skin: skin, mods: mods, onKey: _key, online: online),
+                if (settings.extraKeys) ExtraKeys(skin: skin, mods: mods, onKey: _key, online: online),
               ],
             ),
           ),

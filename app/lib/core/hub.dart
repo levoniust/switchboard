@@ -89,6 +89,16 @@ class Hub extends ChangeNotifier {
   int _backoff = 1;
   bool _paused = false;
   String? _focusPane;
+  bool _windowActive = true;
+
+  /// Desktop: false while the window is unfocused or minimized. The socket stays open (alerts become Windows
+  /// toasts), but the bridge is told nobody is looking, so the phone still gets its push.
+  bool get windowActive => _windowActive;
+  void setWindowActive(bool v) {
+    if (v == _windowActive) return;
+    _windowActive = v;
+    setFocus(_focusPane);
+  }
 
   Future<void> start(Server s) async {
     server = s;
@@ -189,9 +199,12 @@ class Hub extends ChangeNotifier {
   /// Tells the bridge which chat is on screen, so it doesn't push a phone notification for it.
   void setFocus(String? pane) {
     _focusPane = pane;
-    // '*' = the app is open but no chat is on screen: the bridge still skips phone push (we show a banner instead)
-    _ws?.add(jsonEncode({'type': 'focus', 'pane': pane ?? '*'}));
+    // '*' = the app is open but no chat is on screen: the bridge still skips phone push (we show a banner instead).
+    // '-' = a desktop window in the background: matches no chat, so the bridge pushes the phone as usual.
+    _ws?.add(jsonEncode({'type': 'focus', 'pane': focusValue(pane, _windowActive)}));
   }
+
+  static String focusValue(String? pane, bool windowActive) => windowActive ? pane ?? '*' : '-';
 
   Session? sessionByPane(String? pane) {
     for (final s in sessions) {

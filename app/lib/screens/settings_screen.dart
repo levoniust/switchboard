@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../core/api.dart';
+import '../core/platform.dart';
 import '../main.dart';
 import '../skins/chrome.dart';
 import '../skins/skins.dart';
@@ -76,10 +77,17 @@ class SettingsScreen extends StatelessWidget {
             ),
           ]),
           SwitchListTile(
-            title: Text('Haptic feedback', style: TextStyle(color: skin.fg)),
-            value: settings.haptics,
-            onChanged: settings.setHaptics,
+            title: Text('Extra keys bar', style: TextStyle(color: skin.fg)),
+            subtitle: Text('Esc, Tab, Ctrl, arrows under a chat', style: TextStyle(color: skin.dim)),
+            value: settings.extraKeys,
+            onChanged: settings.setExtraKeys,
           ),
+          if (isPhone)
+            SwitchListTile(
+              title: Text('Haptic feedback', style: TextStyle(color: skin.fg)),
+              value: settings.haptics,
+              onChanged: settings.setHaptics,
+            ),
           _section(skin, 'Connection'),
           ListTile(
             title: Text(hub.server?.name ?? 'Not paired', style: TextStyle(color: skin.fg)),

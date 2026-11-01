@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/api.dart';
+import '../core/platform.dart';
 import '../main.dart';
 import '../skins/chrome.dart';
 
@@ -66,7 +67,7 @@ class _PairScreenState extends State<PairScreen> {
       body: SkinBackground(
         skin: skin,
         child: ListView(padding: EdgeInsets.zero, children: [
-          SkinHeader(skin: skin, title: 'Pair', subtitle: 'connect this phone to your computer'),
+          SkinHeader(skin: skin, title: 'Pair', subtitle: isPhone ? 'connect this phone to your computer' : 'connect this device to the bridge'),
           SkinPanel(
             skin: skin,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -74,7 +75,7 @@ class _PairScreenState extends State<PairScreen> {
               const SizedBox(height: 6),
               SelectableText('switchboard pair', style: TextStyle(fontFamily: 'JetBrainsMono', color: skin.accent)),
               const SizedBox(height: 10),
-              Text('Tap the link it prints (or scan its QR code with the camera), or paste the link here:',
+              Text('${isPhone ? 'Tap the link it prints (or scan its QR code with the camera), or paste' : 'Copy the link it prints and paste'} the link here:',
                   style: TextStyle(color: skin.fg)),
               const SizedBox(height: 10),
               TextField(

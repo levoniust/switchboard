@@ -2,15 +2,19 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../core/api.dart';
+import '../core/platform.dart';
 import '../main.dart';
 import '../skins/chrome.dart';
+import '../skins/skins.dart';
 
 /// Vigil (the homelab watchtower) through the bridge, so it works away from home too.
 /// Android's WebView won't trust the bridge's self-signed certificate, so the app runs a tiny proxy on
 /// 127.0.0.1 that forwards to the bridge over the pinned connection and adds the access key.
+/// On a computer there is no WebView: the same proxy is opened in the default browser.
 class VigilScreen extends StatefulWidget {
   final bool standalone;
   const VigilScreen({super.key, this.standalone = false});
@@ -20,6 +24,7 @@ class VigilScreen extends StatefulWidget {
 
 class _VigilScreenState extends State<VigilScreen> {
   WebViewController? _web;
+  int? _port; // desktop: the proxy is ready
   String? _error;
 
   @override
@@ -31,6 +36,10 @@ class _VigilScreenState extends State<VigilScreen> {
   Future<void> _start() async {
     try {
       final port = await LocalProxy.instance.ensure();
+      if (isDesktop) {
+        setState(() => _port = port);
+        return;
+      }
       final c = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(settings.skin.bg)
@@ -41,17 +50,40 @@ class _VigilScreenState extends State<VigilScreen> {
     }
   }
 
+  Future<void> _openInBrowser() async {
+    if (_port == null) return;
+    final ok = await launchUrl(Uri.parse('http://127.0.0.1:$_port/vigil/'), mode: LaunchMode.externalApplication);
+    if (!ok) toast('Could not open the browser');
+  }
+
+  Widget _desktopBody(Skin skin) => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(_error ?? (_port == null ? 'Starting…' : 'Vigil opens in your browser, through this app.'),
+              style: TextStyle(color: skin.dim)),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _port == null ? null : _openInBrowser,
+            icon: const Icon(Icons.open_in_browser),
+            label: Text(skin.head('Open Vigil')),
+          ),
+          const SizedBox(height: 8),
+          Text('The page works while Switchboard is running.', style: TextStyle(color: skin.dim, fontSize: 12)),
+        ]),
+      );
+
   @override
   Widget build(BuildContext context) {
     final skin = settings.skin;
     final body = Column(children: [
       SkinHeader(skin: skin, title: 'Vigil', subtitle: 'homelab watchtower', actions: [
-        IconButton(icon: const Icon(Icons.refresh), onPressed: () => _web?.reload()),
+        if (isPhone) IconButton(icon: const Icon(Icons.refresh), onPressed: () => _web?.reload()),
       ]),
       Expanded(
-        child: _web != null
-            ? WebViewWidget(controller: _web!)
-            : Center(child: Text(_error ?? 'Starting…', style: TextStyle(color: skin.dim))),
+        child: isDesktop
+            ? _desktopBody(skin)
+            : _web != null
+                ? WebViewWidget(controller: _web!)
+                : Center(child: Text(_error ?? 'Starting…', style: TextStyle(color: skin.dim))),
       ),
     ]);
     if (!widget.standalone) return body;
@@ -71,6 +103,11 @@ class LocalProxy {
     _server = s;
     s.listen(_handle);
     return s.port;
+  }
+
+  Future<void> close() async {
+    await _server?.close(force: true);
+    _server = null;
   }
 
   Future<void> _handle(HttpRequest req) async {

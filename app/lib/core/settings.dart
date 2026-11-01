@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../skins/skins.dart';
+import 'platform.dart';
 
 /// User preferences + what the build contains (the Miko skins exist only in the private build).
 class Settings extends ChangeNotifier {
@@ -16,6 +17,7 @@ class Settings extends ChangeNotifier {
   bool readerDefault = true; // chats open in the native Reader view (false = raw terminal)
   bool joinLines = true; // Reader: glue lines the CLI wrapped at its own width back into paragraphs
   bool haptics = true;
+  bool extraKeys = true; // Termux-style key bar under a chat (phone default; a computer has a keyboard)
   bool appLock = false;
   bool mikoAvailable = false;
   Map<String, dynamic> mikoLines = {};
@@ -37,6 +39,7 @@ class Settings extends ChangeNotifier {
     if (skin.isPrivate && !mikoAvailable) skinId = 'cli';
     fontSize = _p.getDouble('fontSize') ?? 13;
     haptics = _p.getBool('haptics') ?? true;
+    extraKeys = _p.getBool('extraKeys') ?? isPhone;
     readerFontSize = _p.getDouble('readerFontSize') ?? 14;
     readerDefault = _p.getBool('readerDefault') ?? true;
     joinLines = _p.getBool('joinLines') ?? true;
@@ -79,6 +82,12 @@ class Settings extends ChangeNotifier {
   void setHaptics(bool v) {
     haptics = v;
     _p.setBool('haptics', v);
+    notifyListeners();
+  }
+
+  void setExtraKeys(bool v) {
+    extraKeys = v;
+    _p.setBool('extraKeys', v);
     notifyListeners();
   }
 

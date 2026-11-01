@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'core/api.dart';
+import 'core/desktop.dart';
 import 'core/hub.dart';
+import 'core/platform.dart';
 import 'core/settings.dart';
 import 'screens/alerts_screen.dart';
 import 'screens/pair_screen.dart';
@@ -25,6 +27,7 @@ Future<void> main() async {
   await settings.load();
   final server = await Server.load();
   if (server != null) unawaited(hub.start(server));
+  if (isDesktop) unawaited(Desktop.instance.init());
   runApp(const SwitchboardApp());
 }
 
@@ -41,6 +44,7 @@ class SwitchboardApp extends StatefulWidget {
 class _SwitchboardAppState extends State<SwitchboardApp> {
   final _links = AppLinks();
   StreamSubscription<Uri>? _linkSub;
+  StreamSubscription<String?>? _toastSub;
   late final AppLifecycleListener _life;
   String? _lastLink;
   DateTime _lastLinkAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -49,12 +53,23 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
   void initState() {
     super.initState();
     _linkSub = _links.uriLinkStream.listen(_onLink);
-    _life = AppLifecycleListener(onResume: hub.resume, onPause: hub.pause, onHide: hub.pause, onShow: hub.resume);
+    if (isDesktop) {
+      // A computer keeps the socket open in the background: unfocused or minimized only changes what the bridge
+      // is told (so the phone still gets pushes) and turns alerts into Windows toasts.
+      _life = AppLifecycleListener(onStateChange: (s) => hub.setWindowActive(s == AppLifecycleState.resumed));
+      _toastSub = Desktop.instance.clicks.listen((pane) {
+        final sess = hub.sessionByPane(pane);
+        if (sess != null) openTerminal(sess);
+      });
+    } else {
+      _life = AppLifecycleListener(onResume: hub.resume, onPause: hub.pause, onHide: hub.pause, onShow: hub.resume);
+    }
   }
 
   @override
   void dispose() {
     _linkSub?.cancel();
+    _toastSub?.cancel();
     _life.dispose();
     super.dispose();
   }
@@ -128,9 +143,11 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
       listenable: settings,
       builder: (context, _) {
         final skin = settings.skin;
-        SystemChrome.setSystemUIOverlayStyle(skin.brightness == Brightness.dark
-            ? SystemUiOverlayStyle.light.copyWith(statusBarColor: Colors.transparent)
-            : SystemUiOverlayStyle.dark.copyWith(statusBarColor: Colors.transparent));
+        if (isPhone) {
+          SystemChrome.setSystemUIOverlayStyle(skin.brightness == Brightness.dark
+              ? SystemUiOverlayStyle.light.copyWith(statusBarColor: Colors.transparent)
+              : SystemUiOverlayStyle.dark.copyWith(statusBarColor: Colors.transparent));
+        }
         return MaterialApp(
           title: 'Switchboard',
           debugShowCheckedModeBanner: false,
@@ -164,6 +181,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _sub = hub.newAlerts.listen((a) {
       // Foreground: a banner instead of a phone notification (the bridge doesn't push while the app is open).
+      if (isDesktop && !hub.windowActive) Desktop.instance.toast(a).ignore();
       if (!mounted || a.type == 'done' && ModalRoute.of(context)?.isCurrent != true) return;
       final who = a.sessionName ?? 'Claude';
       messengerKey.currentState?.showSnackBar(SnackBar(
