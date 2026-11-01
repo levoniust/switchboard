@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../core/api.dart';
@@ -34,11 +35,25 @@ class _VigilScreenState extends State<VigilScreen> {
       final c = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(settings.skin.bg)
+        ..setNavigationDelegate(NavigationDelegate(onNavigationRequest: _onNavigation))
         ..loadRequest(Uri.parse('http://127.0.0.1:$port/vigil/'));
       setState(() => _web = c);
     } catch (e) {
       setState(() => _error = '$e');
     }
+  }
+
+  /// Vigil itself stays in the WebView; its links to lab services (plain http on the home network, reachable away
+  /// from home over Tailscale's subnet route) open in the phone's browser: the WebView refuses cleartext pages.
+  NavigationDecision _onNavigation(NavigationRequest req) {
+    final uri = Uri.tryParse(req.url);
+    if (uri == null || uri.host == '127.0.0.1' || !(uri.isScheme('http') || uri.isScheme('https'))) {
+      return NavigationDecision.navigate;
+    }
+    launchUrl(uri, mode: LaunchMode.externalApplication).then((ok) {
+      if (!ok) toast('Could not open ${uri.host}');
+    });
+    return NavigationDecision.prevent;
   }
 
   @override
