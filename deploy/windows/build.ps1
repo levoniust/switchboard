@@ -51,7 +51,7 @@ foreach ($lnk in $links) {
   $sh = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
   $sh.TargetPath = "$dest\switchboard.exe"
   $sh.WorkingDirectory = $dest
-  $sh.Description = 'Switchboard: Claude Code chats on Powerhouse'
+  $sh.Description = 'Switchboard: your Claude Code chats'
   $sh.Save()
 }
 Write-Host "Installed: $dest (shortcuts: Start menu + desktop)"
