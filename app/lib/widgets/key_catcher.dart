@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/keys.dart';
+import '../core/platform.dart';
 
 /// Invisible text field that turns phone-keyboard input into terminal keys for the raw terminal view:
 /// typed text goes out as-is (through CTRL/ALT if armed), Backspace = DEL, Enter = CR, and moving the
@@ -25,6 +27,18 @@ class _KeyCatcherState extends State<KeyCatcher> {
   void initState() {
     super.initState();
     ctrl.addListener(_changed);
+    // A physical keyboard (the Surface's): Esc, Tab, arrows, Ctrl+letter would be eaten by the text field
+    // (focus moves, caret moves, copy/select all) - send them to the chat instead. Typed text still flows below.
+    if (isDesktop) widget.focusNode.onKeyEvent = _hardwareKey; // the phone keeps its proven soft-keyboard path
+  }
+
+  KeyEventResult _hardwareKey(FocusNode node, KeyEvent e) {
+    if (e is KeyUpEvent) return KeyEventResult.ignored;
+    final hw = HardwareKeyboard.instance;
+    final seq = hardwareKeySeq(e.logicalKey, ctrl: hw.isControlPressed, alt: hw.isAltPressed, shift: hw.isShiftPressed);
+    if (seq == null) return KeyEventResult.ignored;
+    widget.onKey(widget.mods.apply(seq));
+    return KeyEventResult.handled;
   }
 
   @override

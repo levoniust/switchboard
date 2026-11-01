@@ -86,6 +86,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
     _pane = session?.pane;
     hub.setFocus(_pane);
     composer.addListener(_composerChanged);
+    if (isDesktop) composerFocus.onKeyEvent = _composerKey;
     _connect();
   }
 
@@ -260,6 +261,23 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
     }
     composer.clear();
     _lastComposer = '';
+  }
+
+  /// Physical keyboard in the Reader's input line: while it is empty, Esc / arrows / Tab / Ctrl+C go to the chat
+  /// (interrupt Claude, move through a menu); with text in it they edit the text as usual.
+  KeyEventResult _composerKey(FocusNode node, KeyEvent e) {
+    if (e is KeyUpEvent || composer.text.isNotEmpty) return KeyEventResult.ignored;
+    final toChat = <LogicalKeyboardKey>{
+      LogicalKeyboardKey.escape, LogicalKeyboardKey.arrowUp, LogicalKeyboardKey.arrowDown,
+      LogicalKeyboardKey.arrowLeft, LogicalKeyboardKey.arrowRight, LogicalKeyboardKey.tab,
+    };
+    final hw = HardwareKeyboard.instance;
+    final ctrlC = hw.isControlPressed && e.logicalKey == LogicalKeyboardKey.keyC;
+    if (!toChat.contains(e.logicalKey) && !ctrlC) return KeyEventResult.ignored;
+    final seq = hardwareKeySeq(e.logicalKey, ctrl: hw.isControlPressed, alt: hw.isAltPressed, shift: hw.isShiftPressed);
+    if (seq == null) return KeyEventResult.ignored;
+    _send(mods.apply(seq));
+    return KeyEventResult.handled;
   }
 
   void _showKeyboard() {

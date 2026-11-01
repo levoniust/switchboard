@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 /// A sticky modifier key: tap = on for the next key only, long-press = locked on, tap again = off.
 enum ModState { off, once, locked }
@@ -130,3 +131,37 @@ const moreKeys = <XKey>[
   XKey('DEL', '\x1b[3~'),
   XKey('tmux hist', '\x02[\x1b[5~'),
 ];
+
+/// What a physical keyboard key should send to the chat (a computer's keyboard, or one plugged into the phone),
+/// or null to let the text field take it (letters, digits, punctuation: they arrive as typed text).
+/// [ctrl]/[alt]/[shift] are the held modifiers.
+String? hardwareKeySeq(LogicalKeyboardKey key, {bool ctrl = false, bool alt = false, bool shift = false}) {
+  final special = <LogicalKeyboardKey, String>{
+    LogicalKeyboardKey.escape: esc,
+    LogicalKeyboardKey.enter: enter,
+    LogicalKeyboardKey.numpadEnter: enter,
+    LogicalKeyboardKey.backspace: '\x7f',
+    LogicalKeyboardKey.tab: shift ? '\x1b[Z' : '\t',
+    LogicalKeyboardKey.arrowUp: '\x1b[A',
+    LogicalKeyboardKey.arrowDown: '\x1b[B',
+    LogicalKeyboardKey.arrowRight: '\x1b[C',
+    LogicalKeyboardKey.arrowLeft: '\x1b[D',
+    LogicalKeyboardKey.home: '\x1b[H',
+    LogicalKeyboardKey.end: '\x1b[F',
+    LogicalKeyboardKey.pageUp: '\x1b[5~',
+    LogicalKeyboardKey.pageDown: '\x1b[6~',
+    LogicalKeyboardKey.delete: '\x1b[3~',
+    LogicalKeyboardKey.insert: '\x1b[2~',
+  }[key];
+  if (special != null) {
+    if (key == LogicalKeyboardKey.enter && alt) return '\x1b\r'; // Alt+Enter = new line in Claude Code
+    if (key == LogicalKeyboardKey.tab) return special;
+    return withMods(special, ctrl: ctrl, alt: alt);
+  }
+  if (!ctrl && !alt) return null;
+  final label = key.keyLabel;
+  if (label.length != 1) return null;
+  final c = label.toLowerCase();
+  if (ctrl && !alt && c == 'v') return null; // Ctrl+V pastes (the text field types it in)
+  return withMods(c, ctrl: ctrl, alt: alt);
+}
