@@ -251,8 +251,9 @@ def test_push_payload(monkeypatch, tmp_path):
     assert sbcore.ha_push(cfg, alert)
     assert sent["url"].endswith("/api/services/notify/mobile_app_x")
     d = sent["body"]["data"]
-    assert d["clickAction"] == "switchboard://alert/7"
-    assert [a["uri"] for a in d["actions"]] == ["switchboard://answer/7/1", "switchboard://answer/7/no"]
+    tail = "#Intent;scheme=switchboard;package=dev.levoniust.switchboard;end"
+    assert d["clickAction"] == "intent://alert/7" + tail  # HA's Android app opens bare custom schemes as a page (404)
+    assert [a["uri"] for a in d["actions"]] == ["intent://answer/7/1" + tail, "intent://answer/7/no" + tail]
     assert not sbcore.ha_push({"enabled": False}, alert)
 
 

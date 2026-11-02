@@ -406,7 +406,16 @@ class Sessions:
 
 # ---------------------------------------------------------------- push (Home Assistant companion app)
 
-def ha_push(cfg_push, alert, link_base="switchboard://"):
+APP_PACKAGE = "dev.levoniust.switchboard"
+
+
+def app_link(path):
+    """Tap link for HA companion notifications. The Android HA app doesn't hand custom schemes to other apps: a bare
+    switchboard://x is loaded as a page inside HA (404). An intent: URI is passed to Android, which opens Switchboard."""
+    return f"intent://{path}#Intent;scheme=switchboard;package={APP_PACKAGE};end"
+
+
+def ha_push(cfg_push, alert, link=app_link):
     """Send an alert to the phone through HA's mobile_app notify service. Tapping opens the app at the alert."""
     url, service = cfg_push.get("ha_url"), cfg_push.get("ha_notify")
     if not (cfg_push.get("enabled") and url and service):
@@ -414,8 +423,7 @@ def ha_push(cfg_push, alert, link_base="switchboard://"):
     token = open(os.path.expanduser(cfg_push.get("ha_token_file", "~/.ha_token"))).read().strip()
     icon = {"permission": "🔐", "question": "❓", "done": "✅", "error": "⚠️"}.get(alert["type"], "🔔")
     who = alert.get("session_name") or alert.get("window") or "Claude"
-    open_link = f"{link_base}alert/{alert['id']}"
-    data = {"clickAction": open_link, "url": open_link, "tag": f"sb-{alert.get('pane')}", "group": "switchboard",
+    data = {"clickAction": link(f"alert/{alert['id']}"), "url": f"switchboard://alert/{alert['id']}", "tag": f"sb-{alert.get('pane')}", "group": "switchboard",
             "channel": "Switchboard " + ("Done" if alert["type"] == "done" else "Needs you"),
             "importance": "high", "priority": "high", "ttl": 0, "notification_icon": "mdi:console"}
     opts = alert.get("options") or []
@@ -423,7 +431,7 @@ def ha_push(cfg_push, alert, link_base="switchboard://"):
         opts = [{"key": "1", "label": "Yes"}, {"key": "no", "label": "No"}]
     if opts:
         data["actions"] = [{"action": "URI", "title": o["label"][:20],
-                            "uri": f"{link_base}answer/{alert['id']}/{o['key']}"} for o in opts[:3]]
+                            "uri": link(f"answer/{alert['id']}/{o['key']}")} for o in opts[:3]]
     body = {"title": f"{icon} {who}: {alert['title']}", "message": alert.get("body") or alert["title"], "data": data}
     req = urllib.request.Request(f"{url.rstrip('/')}/api/services/notify/{service}", json.dumps(body).encode(),
                                  {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
