@@ -12,7 +12,42 @@ import threading
 import time
 import urllib.request
 
-KINDS = ("claude", "claude-local", "shell")
+KINDS = ("claude", "claude-local", "shell")  # the built-in launchers (old apps only know these)
+
+# What the app's "new chat" menu offers. Override with "launchers" in config.json, e.g. to name your local model or
+# add a second local agent. Fields: kind (id), label (badge text), name (default window name), command (program to
+# run in the window), claude (true = Claude Code, gets hooks/Reader support), accent (1 or 2 = skin colour),
+# icon (cloud|chip|terminal|spark), match (env vars of the running claude process that identify this launcher).
+DEFAULT_LAUNCHERS = [
+    {"kind": "claude", "label": "Claude", "name": "claude", "command": "claude", "claude": True, "accent": 1,
+     "icon": "cloud"},
+    {"kind": "claude-local", "label": "Local", "name": "local", "command": "claude-local", "claude": True,
+     "accent": 2, "icon": "chip"},
+    {"kind": "shell", "label": "Shell", "name": "shell", "command": "", "claude": False, "accent": 1,
+     "icon": "terminal"},
+]
+_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_CMD_RE = re.compile(r"^[A-Za-z0-9_./ -]*$")
+
+
+def launchers(cfg):
+    """The launcher list from config.json (validated) or the defaults. The shell launcher is always there."""
+    out = []
+    for item in cfg.get("launchers") or DEFAULT_LAUNCHERS:
+        kind, command = str(item.get("kind", "")), str(item.get("command", ""))
+        if not _KIND_RE.match(kind) or not _CMD_RE.match(command) or any(l["kind"] == kind for l in out):
+            continue  # commands go inside bash -ic '...': keep them to plain words so nothing can break out
+        out.append({"kind": kind, "label": str(item.get("label") or kind)[:16], "name": str(item.get("name") or kind)[:40],
+                    "command": command, "claude": bool(item.get("claude", kind != "shell")),
+                    "accent": 2 if item.get("accent") == 2 else 1, "icon": str(item.get("icon") or "chip")[:16],
+                    "match": {str(k): str(v) for k, v in (item.get("match") or {}).items()}})
+    if not any(l["kind"] == "shell" for l in out):
+        out.append(dict(DEFAULT_LAUNCHERS[-1], match={}))
+    return out
+
+
+def public_launchers(cfg):
+    return [{k: l[k] for k in ("kind", "label", "name", "claude", "accent", "icon")} for l in launchers(cfg)]
 
 
 # ---------------------------------------------------------------- config
@@ -144,19 +179,20 @@ class Tmux:
         self.run("kill-session", "-t", f"={name}", check=False)
 
 
-def command_for(kind):
+def command_for(kind, cfg=None):
     """Shell command a new chat window runs. Falls back to a shell when the program exits.
     Claude runs with the alternate screen disabled so its output scrolls into tmux history
     and the app's Reader can scroll back through the whole conversation."""
-    if kind == "claude":
-        return "bash -ic 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude; exec bash'"
-    if kind == "claude-local":
-        return "bash -ic 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude-local; exec bash'"
-    return "bash -l"
+    l = next((l for l in launchers(cfg or {}) if l["kind"] == kind), None)
+    if not l or not l["command"]:
+        return "bash -l"
+    env = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 " if l["claude"] else ""
+    return f"bash -ic '{env}{l['command']}; exec bash'"
 
 
-def detect_kind(pid):
-    """claude / claude-local / shell from the pane's process tree (env of the claude process)."""
+def detect_kind(pid, cfg=None):
+    """Launcher kind from the pane's process tree: a launcher whose "match" env vars all equal the running
+    claude process's environment wins; otherwise claude (Anthropic API) / claude-local (any other base URL)."""
     for p in _descendants(pid):
         try:
             cmd = open(f"/proc/{p}/cmdline", "rb").read().split(b"\0")
@@ -164,11 +200,15 @@ def detect_kind(pid):
             continue
         if any(os.path.basename(c) == b"claude" or c.endswith(b"/claude") for c in cmd[:2]):
             try:
-                env = open(f"/proc/{p}/environ", "rb").read().split(b"\0")
+                raw = open(f"/proc/{p}/environ", "rb").read().split(b"\0")
             except OSError:
-                env = []
-            base = next((e for e in env if e.startswith(b"ANTHROPIC_BASE_URL=")), b"")
-            return "claude-local" if base and b"anthropic.com" not in base else "claude"
+                raw = []
+            env = dict(e.decode("utf-8", "replace").split("=", 1) for e in raw if b"=" in e)
+            for l in launchers(cfg or {}):
+                if l["match"] and all(env.get(k) == v for k, v in l["match"].items()):
+                    return l["kind"]
+            base = env.get("ANTHROPIC_BASE_URL", "")
+            return "claude-local" if base and "anthropic.com" not in base else "claude"
     return "shell"
 
 

@@ -30,8 +30,34 @@ class Session {
     return parts.length <= 2 ? cwd : '…/${parts.sublist(parts.length - 2).join('/')}';
   }
 
-  bool get isClaude => kind == 'claude' || kind == 'claude-local';
+  bool get isClaude => hub0?.launcher(kind).claude ?? kind != 'shell';
 }
+
+/// One entry of the bridge's "new chat" menu (GET /api/info "launchers"). The bridge owner names them
+/// (config.json "launchers"); older bridges send none, so the app falls back to [Launcher.defaults].
+class Launcher {
+  final String kind, label, name, icon;
+  final bool claude;
+  final int accent;
+  const Launcher(this.kind, this.label, this.name, {this.claude = true, this.accent = 1, this.icon = 'chip'});
+
+  Launcher.fromJson(Map<String, dynamic> j)
+      : kind = j['kind'] as String,
+        label = j['label'] as String? ?? j['kind'] as String,
+        name = j['name'] as String? ?? j['kind'] as String,
+        claude = j['claude'] as bool? ?? j['kind'] != 'shell',
+        accent = (j['accent'] as num?)?.toInt() == 2 ? 2 : 1,
+        icon = j['icon'] as String? ?? 'chip';
+
+  static const defaults = [
+    Launcher('claude', 'Claude', 'claude', icon: 'cloud'),
+    Launcher('claude-local', 'Local', 'local', accent: 2),
+    Launcher('shell', 'Shell', 'shell', claude: false, icon: 'terminal'),
+  ];
+}
+
+/// Set by [Hub]'s constructor so [Session] can look up its launcher without importing main.dart.
+Hub? hub0;
 
 class AlertOption {
   final String key, label, detail;
@@ -75,7 +101,16 @@ enum LinkState { offline, connecting, online }
 /// Live app state: sessions, alerts, connection. Keeps one events WebSocket open while the app runs and
 /// reconnects with backoff (network switches between home Wi-Fi and Tailscale are expected).
 class Hub extends ChangeNotifier {
+  Hub() {
+    hub0 = this;
+  }
+
   Api? api;
+  List<Launcher> launchers = Launcher.defaults;
+  bool _launchersLoaded = false;
+
+  Launcher launcher(String kind) => launchers.firstWhere((l) => l.kind == kind,
+      orElse: () => Launcher(kind, kind, kind, claude: kind != 'shell'));
   Server? server;
   List<Session> sessions = [];
   List<Alert> alerts = [];
@@ -102,6 +137,8 @@ class Hub extends ChangeNotifier {
 
   Future<void> start(Server s) async {
     server = s;
+    launchers = Launcher.defaults;
+    _launchersLoaded = false;
     promptHost = s.name.toLowerCase();
     api = Api(s);
     _paused = false; // a new pairing starts fresh, even right after "Forget"
@@ -170,6 +207,16 @@ class Hub extends ChangeNotifier {
 
   Future<void> refresh() async {
     if (api == null) return;
+    if (!_launchersLoaded) {
+      try {
+        final info = await api!.get('/api/info') as Map;
+        final ls = info['launchers'] as List?;
+        if (ls != null && ls.isNotEmpty) {
+          launchers = ls.map((j) => Launcher.fromJson(j as Map<String, dynamic>)).toList();
+        }
+        _launchersLoaded = true;
+      } catch (_) {} // older bridge or a blip: keep the defaults, try again next refresh
+    }
     final s = await api!.get('/api/sessions') as List;
     sessions = s.map((j) => Session.fromJson(j as Map<String, dynamic>)).toList()
       ..sort((a, b) => a.index.compareTo(b.index));

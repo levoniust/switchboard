@@ -436,5 +436,38 @@ async def test_end_to_end(bridge_env):
         task.cancel()
 
 
+
+
+def test_launchers_default_and_custom():
+    assert [l["kind"] for l in sbcore.launchers({})] == ["claude", "claude-local", "shell"]
+    cfg = {"launchers": [
+        {"kind": "claude", "label": "Claude", "command": "claude"},
+        {"kind": "agent-b", "label": "Agent B", "command": "my-agent", "accent": 2, "match": {"ANTHROPIC_MODEL": "b"}},
+        {"kind": "bad kind!", "command": "x"},                      # invalid id -> dropped
+        {"kind": "evil", "command": "x'; rm -rf ~; echo '"},          # quote -> dropped
+        {"kind": "agent-b", "command": "dupe"},                       # duplicate -> dropped
+    ]}
+    ls = sbcore.launchers(cfg)
+    assert [l["kind"] for l in ls] == ["claude", "agent-b", "shell"]  # shell always added
+    assert sbcore.command_for("agent-b", cfg) == "bash -ic 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 my-agent; exec bash'"
+    assert sbcore.command_for("nope", cfg) == "bash -l"
+    pub = sbcore.public_launchers(cfg)
+    assert all("command" not in l and "match" not in l for l in pub)
+
+
+def test_detect_kind_match(monkeypatch, tmp_path):
+    cfg = {"launchers": [{"kind": "agent-b", "command": "my-agent", "match": {"ANTHROPIC_MODEL": "b"}}]}
+    files = {"/proc/7/cmdline": b"claude\0--x\0", "/proc/7/environ": b"ANTHROPIC_BASE_URL=http://h:1\0ANTHROPIC_MODEL=b\0"}
+    import builtins, io
+    real_open = builtins.open
+    monkeypatch.setattr(sbcore, "_descendants", lambda pid: [7])
+    monkeypatch.setattr(builtins, "open", lambda f, *a, **k: io.BytesIO(files[f]) if f in files else real_open(f, *a, **k))
+    assert sbcore.detect_kind(1, cfg) == "agent-b"
+    files["/proc/7/environ"] = b"ANTHROPIC_BASE_URL=http://h:1\0ANTHROPIC_MODEL=other\0"
+    assert sbcore.detect_kind(1, cfg) == "claude-local"
+    files["/proc/7/environ"] = b"PATH=/bin\0"
+    assert sbcore.detect_kind(1, cfg) == "claude"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

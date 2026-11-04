@@ -181,7 +181,7 @@ class Bridge:
 
     def session_view(self, w):
         st = self.sessions.get(w["pane"])
-        kind = st.get("kind") or sbcore.detect_kind(w["pid"])
+        kind = st.get("kind") or sbcore.detect_kind(w["pid"], self.cfg)
         st["kind"] = kind
         pending = self.store.get(st["pending"]) if st.get("pending") else None
         return {"id": w["id"], "index": w["index"], "name": w["name"], "pane": w["pane"], "cwd": w["cwd"],
@@ -245,13 +245,14 @@ class Bridge:
             w = next((w for w in await asyncio.to_thread(self.tmux.windows) if w["pane"] == pane), None)
             if not w:
                 return web.json_response({"ok": True, "ignored": "not a Switchboard tmux pane"})
-            meta.update(window=w["id"], title=w["name"], kind=hint or sbcore.detect_kind(w["pid"]))
+            meta.update(window=w["id"], title=w["name"], kind=hint or sbcore.detect_kind(w["pid"], self.cfg))
         alert = self.sessions.hook(ev, meta)
         return web.json_response({"ok": True, "alert": alert["id"] if alert else None})
 
     # ---- REST
     async def info(self, request):
-        return web.json_response({"name": self.cfg["name"], "version": VERSION, "kinds": sbcore.KINDS,
+        return web.json_response({"name": self.cfg["name"], "version": VERSION, "kinds": [l["kind"] for l in sbcore.launchers(self.cfg)],
+                                  "launchers": sbcore.public_launchers(self.cfg),
                                   "roots": self.cfg["roots"], "vigil": bool(self.cfg.get("vigil_url"))})
 
     async def list_sessions(self, request):
@@ -261,12 +262,13 @@ class Bridge:
     async def create_session(self, request):
         body = await request.json()
         kind = body.get("kind", "claude")
-        if kind not in sbcore.KINDS:
+        launcher = next((l for l in sbcore.launchers(self.cfg) if l["kind"] == kind), None)
+        if not launcher:
             raise web.HTTPBadRequest(text="unknown kind")
         cwd = self._safe_path(body.get("cwd") or self.cfg["roots"][0])
-        name = (body.get("name") or {"claude": "claude", "claude-local": "qwen", "shell": "shell"}[kind])[:40]
+        name = (body.get("name") or launcher["name"])[:40]
         await asyncio.to_thread(self.tmux.ensure_session)
-        wid, pane = await asyncio.to_thread(self.tmux.new_window, name, cwd, sbcore.command_for(kind))
+        wid, pane = await asyncio.to_thread(self.tmux.new_window, name, cwd, sbcore.command_for(kind, self.cfg))
         self.sessions.get(pane)["kind"] = kind
         self.broadcast({"type": "sessions"})
         return web.json_response({"id": wid, "pane": pane})

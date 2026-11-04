@@ -103,7 +103,9 @@ class _SessionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = statusColor(skin, s.status);
-    final kindLabel = switch (s.kind) { 'claude' => 'CLAUDE', 'claude-local' => 'QWEN', _ => 'SHELL' };
+    final l = hub.launcher(s.kind);
+    final kindLabel = l.label.toUpperCase();
+    final kindColor = l.accent == 2 ? skin.accent2 : skin.accent;
     return SkinPanel(
       skin: skin,
       tint: c,
@@ -114,11 +116,11 @@ class _SessionCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
-                color: (s.kind == 'claude-local' ? skin.accent2 : skin.accent).withValues(alpha: 0.18),
+                color: kindColor.withValues(alpha: 0.18),
                 borderRadius: BorderRadius.circular(skin.radius.clamp(0, 8))),
             child: Text(kindLabel,
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1,
-                    color: s.kind == 'claude-local' ? skin.accent2 : skin.accent)),
+                    color: kindColor)),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -198,7 +200,14 @@ class _SessionCard extends StatelessWidget {
   }
 }
 
-/// Start a new chat: claude, claude-local or a shell, in a folder picked on the bridge computer.
+/// Start a new chat with one of the bridge's launchers (Claude, a local agent, a shell…) in a folder on the bridge computer.
+IconData launcherIcon(String icon) => switch (icon) {
+      'cloud' => Icons.cloud_outlined,
+      'terminal' => Icons.terminal,
+      'spark' => Icons.auto_awesome,
+      _ => Icons.memory,
+    };
+
 class NewSessionSheet extends StatefulWidget {
   const NewSessionSheet({super.key});
   @override
@@ -248,15 +257,15 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'claude', label: Text('Claude'), icon: Icon(Icons.cloud_outlined)),
-                  ButtonSegment(value: 'claude-local', label: Text('Qwen'), icon: Icon(Icons.memory)),
-                  ButtonSegment(value: 'shell', label: Text('Shell'), icon: Icon(Icons.terminal)),
-                ],
-                selected: {kind},
-                onSelectionChanged: (v) => setState(() => kind = v.first),
-              ),
+              child: Wrap(spacing: 8, runSpacing: 6, children: [
+                for (final l in hub.launchers)
+                  ChoiceChip(
+                    avatar: Icon(launcherIcon(l.icon), size: 18),
+                    label: Text(l.label),
+                    selected: kind == l.kind,
+                    onSelected: (_) => setState(() => kind = l.kind),
+                  ),
+              ]),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
@@ -304,7 +313,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                         }
                       },
                 icon: const Icon(Icons.play_arrow),
-                label: Text('Start ${kind == 'claude-local' ? 'claude-local' : kind} here'),
+                label: Text('Start ${hub.launcher(kind).label} here'),
               ),
             ),
           ]),
