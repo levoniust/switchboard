@@ -6,13 +6,11 @@ worker threads (asyncio.to_thread), attach() from the event loop.
 import asyncio
 import json
 import os
-import re
 import urllib.error
 import urllib.request
 
 import sbcore
 
-_WIN_CMD_RE = re.compile(r"^[A-Za-z0-9_./\\: -]*$")
 SHELL_ARGV = ["powershell.exe", "-NoLogo"]
 
 
@@ -92,7 +90,7 @@ class KeeperBackend:
     def command_for(self, kind, cfg):
         """argv + env for a new chat. Launcher commands run in PowerShell, which stays open when they exit
         (like `exec bash` on Linux)."""
-        l = next((l for l in sbcore.launchers(cfg or {}, cmd_re=_WIN_CMD_RE) if l["kind"] == kind), None)
+        l = next((l for l in sbcore.launchers(cfg or {}, cmd_re=sbcore._WIN_CMD_RE) if l["kind"] == kind), None)
         if not l or not l["command"]:
             return {"argv": SHELL_ARGV, "env": {}}
         env = {"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"} if l["claude"] else {}

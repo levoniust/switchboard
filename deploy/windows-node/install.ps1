@@ -20,6 +20,9 @@ param(
   [switch]$NoTasks
 )
 $ErrorActionPreference = "Stop"
+# powershell -File passes "a,b" as one string: split lists ourselves
+$Hosts = @($Hosts | ForEach-Object { $_ -split "," } | Where-Object { $_ })
+$ClaudeConfig = @($ClaudeConfig | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $Src = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # repo root
 if (-not (Test-Path "$Src\bridge\switchboard.py")) { throw "run this from inside a Switchboard repo copy ($Src has no bridge\)" }
 $Home_ = Join-Path $env:LOCALAPPDATA "switchboard"
@@ -27,7 +30,7 @@ $Home_ = Join-Path $env:LOCALAPPDATA "switchboard"
 # ---- files
 New-Item -ItemType Directory -Force $Dir, "$Dir\hooks", $Home_ | Out-Null
 $keeperOld = if (Test-Path "$Dir\sbkeeper.py") { (Get-FileHash "$Dir\sbkeeper.py").Hash } else { "" }
-Copy-Item "$Src\bridge\switchboard.py", "$Src\bridge\sbcore.py", "$Src\bridge\sbwin.py", "$Src\bridge\sbkeeper.py" $Dir -Force
+Copy-Item "$Src\bridge\switchboard.py", "$Src\bridge\sbcore.py", "$Src\bridge\sbwin.py", "$Src\bridge\sbkeeper.py", "$Src\bridge\sbrun.py" $Dir -Force
 Copy-Item "$Src\hooks\switchboard-hook" "$Dir\hooks\switchboard-hook" -Force
 $keeperChanged = $keeperOld -ne (Get-FileHash "$Dir\sbkeeper.py").Hash
 
@@ -86,26 +89,31 @@ if (Get-NetAdapter -Name "Tailscale" -EA SilentlyContinue) {
 }
 
 # ---- Scheduled Tasks: start at logon, hidden, restart on failure, no time limit
+$Me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name   # MACHINE\user (USERDOMAIN is WORKGROUP over SSH)
 function Set-SbTask($name, $script, $argsText) {
-  $act = New-ScheduledTaskAction -Execute $PyW -Argument "`"$Dir\$script`" $argsText" -WorkingDirectory $Dir
-  $trg = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+  # sbrun.py restarts the program whenever it exits (Task Scheduler only retries a task that fails to START)
+  $act = New-ScheduledTaskAction -Execute $PyW -Argument "`"$Dir\sbrun.py`" `"$Dir\$script`" $argsText" -WorkingDirectory $Dir
+  $trg = New-ScheduledTaskTrigger -AtLogOn -User $Me
   $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
            -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-  $pr = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+  $pr = New-ScheduledTaskPrincipal -UserId $Me -LogonType Interactive -RunLevel Limited
   Register-ScheduledTask -TaskName $name -Action $act -Trigger $trg -Settings $set -Principal $pr -Force | Out-Null
 }
 Set-SbTask "Switchboard keeper" "sbkeeper.py" ""
 Set-SbTask "Switchboard node" "switchboard.py" "serve"
 
-function Restart-SbTask($name) {
+function Restart-SbTask($name, $script) {
   Stop-ScheduledTask -TaskName $name -EA SilentlyContinue
-  Start-Sleep -Milliseconds 800
+  # ending the task ends sbrun, not always its child: stop the program itself too
+  Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+    Where-Object { $_.CommandLine -like "*$Dir\$script*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+  Start-Sleep -Milliseconds 1500
   Start-ScheduledTask -TaskName $name
 }
 $keeperRunning = (Get-ScheduledTask -TaskName "Switchboard keeper").State -eq "Running"
-if ($keeperChanged -or -not $keeperRunning) { Restart-SbTask "Switchboard keeper"; Write-Host "sbkeeper (re)started" }
+if ($keeperChanged -or -not $keeperRunning) { Restart-SbTask "Switchboard keeper" "sbkeeper.py"; Write-Host "sbkeeper (re)started" }
 else { Write-Host "sbkeeper unchanged: left running (open chats kept)" }
-Restart-SbTask "Switchboard node"
+Restart-SbTask "Switchboard node" "switchboard.py"
 $up = $false
 for ($i = 0; $i -lt 20 -and -not $up; $i++) { Start-Sleep -Milliseconds 500; $up = [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -EA SilentlyContinue) }
 if ($up) { Write-Host "node is up on port $Port. Pair a device: $Py `"$Dir\switchboard.py`" pair" -ForegroundColor Green }

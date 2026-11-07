@@ -30,13 +30,14 @@ DEFAULT_LAUNCHERS = [
 ]
 _KIND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _CMD_RE = re.compile(r"^[A-Za-z0-9_./ -]*$")
+_WIN_CMD_RE = re.compile(r"^[A-Za-z0-9_./\\: -]*$")  # Windows paths: C:\dir\x.ps1
 
 
 def launchers(cfg, cmd_re=None):
     """The launcher list from config.json (validated) or the defaults. The shell launcher is always there.
     cmd_re: what a command may contain (Windows nodes also allow \\ and : for paths)."""
     out = []
-    cmd_re = cmd_re or _CMD_RE
+    cmd_re = cmd_re or (_WIN_CMD_RE if IS_WINDOWS else _CMD_RE)
     for item in cfg.get("launchers") or DEFAULT_LAUNCHERS:
         kind, command = str(item.get("kind", "")), str(item.get("command", ""))
         if not _KIND_RE.match(kind) or not cmd_re.match(command) or any(l["kind"] == kind for l in out):

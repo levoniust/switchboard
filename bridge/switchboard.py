@@ -873,18 +873,32 @@ async def serve(cfg):
     ctx.load_cert_chain(os.path.join(d, "cert.pem"), os.path.join(d, "key.pem"))
     # "bind" (optional) = where to listen, when that differs from the addresses devices use ("hosts"), e.g. a
     # laptop whose Wi-Fi address changes: bind ["0.0.0.0"] and let the firewall decide who gets in
-    for host in cfg.get("bind") or cfg["hosts"]:
-        try:
-            await web.TCPSite(runner, host, cfg["port"], ssl_context=ctx).start()
-            log.info("listening on https://%s:%s", host, cfg["port"])
-        except OSError as e:
-            log.warning("cannot listen on %s:%s (%s) - is that interface up?", host, cfg["port"], e)
+    pending = list(cfg.get("bind") or cfg["hosts"])
+    for attempt in range(30):  # right after a restart the old process may still hold the port for a moment
+        for host in list(pending):
+            try:
+                await web.TCPSite(runner, host, cfg["port"], ssl_context=ctx).start()
+                log.info("listening on https://%s:%s", host, cfg["port"])
+                pending.remove(host)
+            except OSError as e:
+                if attempt in (0, 29):
+                    log.warning("cannot listen on %s:%s (%s) - is that interface up?", host, cfg["port"], e)
+        if not pending:
+            break
+        await asyncio.sleep(1)
 
     hook_app = web.Application()
     hook_app.router.add_post("/hook", bridge.hook)
     hook_runner = web.AppRunner(hook_app, access_log=None)
     await hook_runner.setup()
-    await web.TCPSite(hook_runner, "127.0.0.1", cfg["hook_port"]).start()
+    for attempt in range(30):  # a node that was just restarted may still hold the port for a moment
+        try:
+            await web.TCPSite(hook_runner, "127.0.0.1", cfg["hook_port"]).start()
+            break
+        except OSError:
+            if attempt == 29:
+                raise
+            await asyncio.sleep(1)
     log.info("hooks on http://127.0.0.1:%s/hook", cfg["hook_port"])
 
     asyncio.ensure_future(bridge.watch_windows())
