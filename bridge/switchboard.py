@@ -230,8 +230,8 @@ class Bridge:
             return "legacy"
         return self.devices.check(tok)
 
-    def window_for(self, wid):
-        for w in self.term.windows():
+    async def window_for(self, wid):
+        for w in await asyncio.to_thread(self.term.windows):
             if wid in (w["id"], w["pane"], str(w["index"])):
                 return w
         raise web.HTTPNotFound(text="no such session")
@@ -302,7 +302,14 @@ class Bridge:
             w = next((w for w in await asyncio.to_thread(self.term.windows) if w["pane"] == pane), None)
             if not w:
                 return web.json_response({"ok": True, "ignored": "not a Switchboard tmux pane"})
-            meta.update(window=w["id"], title=w["name"], kind=hint or self.term.detect_kind(w["pid"], self.cfg))
+            # the launcher the chat was started with (or found from its process) beats the hook's guess, which
+            # only knows "Anthropic or not" and would turn every local launcher into "claude-local"
+            kind = self.sessions.get(pane).get("kind")
+            if not kind or kind == "shell":
+                kind = await asyncio.to_thread(self.term.detect_kind, w["pid"], self.cfg)
+            if kind == "shell" and hint:
+                kind = hint
+            meta.update(window=w["id"], title=w["name"], kind=kind)
         alert = self.sessions.hook(ev, meta)
         return web.json_response({"ok": True, "alert": alert["id"] if alert else None})
 
@@ -351,7 +358,8 @@ class Bridge:
 
     async def list_sessions(self, request):
         wins = await asyncio.to_thread(self.term.windows)
-        return web.json_response([self.session_view(w) for w in wins])
+        # session_view may look at processes (kind detection): keep that off the event loop
+        return web.json_response(await asyncio.to_thread(lambda: [self.session_view(w) for w in wins]))
 
     async def create_session(self, request):
         body = await request.json()
@@ -368,28 +376,28 @@ class Bridge:
         return web.json_response({"id": wid, "pane": pane})
 
     async def rename_session(self, request):
-        w = self.window_for(request.match_info["sid"])
+        w = await self.window_for(request.match_info["sid"])
         name = (await request.json()).get("name", "")[:40]
         await asyncio.to_thread(self.term.rename, w["id"], name)
         self.broadcast({"type": "sessions"})
         return web.json_response({"ok": True})
 
     async def kill_session(self, request):
-        w = self.window_for(request.match_info["sid"])
+        w = await self.window_for(request.match_info["sid"])
         await asyncio.to_thread(self.term.kill, w["id"])
         self.store.close_pane(w["pane"])
         self.broadcast({"type": "sessions"})
         return web.json_response({"ok": True})
 
     async def send_keys(self, request):
-        w = self.window_for(request.match_info["sid"])
+        w = await self.window_for(request.match_info["sid"])
         body = await request.json()
         keys = [k for k in body.get("keys", []) if isinstance(k, str) and len(k) < 20]
         await asyncio.to_thread(self.term.send_keys, w["pane"], keys, body.get("text"))
         return web.json_response({"ok": True})
 
     async def screen(self, request):
-        w = self.window_for(request.match_info["sid"])
+        w = await self.window_for(request.match_info["sid"])
         text = await asyncio.to_thread(self.term.capture, w["pane"], _int(request.query.get("lines"), 60, 1, 10000))
         return web.json_response({"text": text, "options": sbcore.parse_options(text)})
 
@@ -516,7 +524,7 @@ class Bridge:
                      {"drop", "keep", "tail", "w", "alt"} updates and lays it out natively. With &proto=2
                      it is seeded with the whole scrollback ({"full", "tail"}) and synced with
                      {"keep_len", "tail", "trim"} updates — scroll back through the whole conversation."""
-        w = self.window_for(request.match_info["sid"])
+        w = await self.window_for(request.match_info["sid"])
         mode = request.query.get("mode", "live")
         cols, rows = _int(request.query.get("cols"), 80, 10, 1000), _int(request.query.get("rows"), 30, 5, 500)
         ws = web.WebSocketResponse(heartbeat=15, max_msg_size=4 * 1024 * 1024)

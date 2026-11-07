@@ -32,12 +32,14 @@ _KIND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _CMD_RE = re.compile(r"^[A-Za-z0-9_./ -]*$")
 
 
-def launchers(cfg):
-    """The launcher list from config.json (validated) or the defaults. The shell launcher is always there."""
+def launchers(cfg, cmd_re=None):
+    """The launcher list from config.json (validated) or the defaults. The shell launcher is always there.
+    cmd_re: what a command may contain (Windows nodes also allow \\ and : for paths)."""
     out = []
+    cmd_re = cmd_re or _CMD_RE
     for item in cfg.get("launchers") or DEFAULT_LAUNCHERS:
         kind, command = str(item.get("kind", "")), str(item.get("command", ""))
-        if not _KIND_RE.match(kind) or not _CMD_RE.match(command) or any(l["kind"] == kind for l in out):
+        if not _KIND_RE.match(kind) or not cmd_re.match(command) or any(l["kind"] == kind for l in out):
             continue  # commands go inside bash -ic '...': keep them to plain words so nothing can break out
         out.append({"kind": kind, "label": str(item.get("label") or kind)[:16], "name": str(item.get("name") or kind)[:40],
                     "command": command, "claude": bool(item.get("claude", kind != "shell")),
@@ -354,12 +356,23 @@ def detect_kind(pid, cfg=None):
             except OSError:
                 raw = []
             env = dict(e.decode("utf-8", "replace").split("=", 1) for e in raw if b"=" in e)
-            for l in launchers(cfg or {}):
-                if l["match"] and all(env.get(k) == v for k, v in l["match"].items()):
-                    return l["kind"]
-            base = env.get("ANTHROPIC_BASE_URL", "")
-            return "claude-local" if base and "anthropic.com" not in base else "claude"
+            return kind_from_env(env, cfg)
     return "shell"
+
+
+def kind_from_env(env, cfg):
+    """A launcher whose "match" env vars all equal the claude process's environment wins; otherwise the first
+    claude launcher for the API it talks to (Anthropic = "claude", anything else = the first local claude launcher
+    without a "match", e.g. a Windows node's only local launcher)."""
+    ls = launchers(cfg or {})
+    for l in ls:
+        if l["match"] and all(env.get(k) == v for k, v in l["match"].items()):
+            return l["kind"]
+    base = env.get("ANTHROPIC_BASE_URL", "")
+    local = bool(base) and "anthropic.com" not in base
+    if not local:
+        return "claude"
+    return next((l["kind"] for l in ls if l["claude"] and l["kind"] != "claude" and not l["match"]), "claude-local")
 
 
 def _descendants(pid, depth=4):

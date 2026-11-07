@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["aiohttp>=3.9,<4", "segno>=1.6", "cryptography>=42", "pytest>=8", "pytest-asyncio>=0.23"]
+# dependencies = ["aiohttp>=3.9,<4", "segno>=1.6", "cryptography>=42", "pyte>=0.8", "psutil>=5.9", "pytest>=8",
+#                 "pytest-asyncio>=0.23"]
 # ///
 """Bridge tests. Run: uv run --script test_bridge.py  (uses a throwaway tmux session, never "AI")."""
 import asyncio
@@ -481,6 +482,84 @@ def test_detect_kind_match(monkeypatch, tmp_path):
     assert sbcore.detect_kind(1, cfg) == "claude-local"
     files["/proc/7/environ"] = b"PATH=/bin\0"
     assert sbcore.detect_kind(1, cfg) == "claude"
+    # a node whose only local launcher has no match (e.g. Windows claude-local-s) gets that launcher
+    cfg2 = {"launchers": [{"kind": "claude", "command": "claude"}, {"kind": "local-s", "command": "x", "claude": True}]}
+    assert sbcore.kind_from_env({"ANTHROPIC_BASE_URL": "http://127.0.0.1:8085"}, cfg2) == "local-s"
+
+
+# ---------------------------------------------------------------- Windows node path (sbkeeper backend), run on Linux
+
+@pytest.mark.asyncio
+async def test_node_on_keeper_backend(bridge_env, monkeypatch):
+    """The whole node API on top of sbkeeper instead of tmux (what a Windows node runs), with bash for PowerShell."""
+    cfg, home, sess = bridge_env
+    import sbkeeper
+    import sbwin
+    import switchboard
+    from aiohttp import ClientSession
+    from aiohttp.test_utils import TestServer
+
+    keeper = TestServer(sbkeeper.make_app(sbkeeper.Keeper("kk")))
+    await keeper.start_server()
+    open(os.path.join(home, "keeper.key"), "w").write(f"{keeper.port} kk\n")
+
+    class BashKeeper(sbwin.KeeperBackend):
+        def command_for(self, kind, cfg):
+            return {"argv": ["bash", "--norc", "--noprofile", "-i"], "env": {"PS1": "$ "}}
+
+    monkeypatch.setattr(switchboard, "make_backend", lambda c: BashKeeper(c, home))
+    task = asyncio.ensure_future(switchboard.serve(sbcore.load_config()))
+    await asyncio.sleep(1.5)
+    base = f"https://127.0.0.1:{cfg['port']}"
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+    H = {"Authorization": "Bearer tok"}
+    hook, hh = f"http://127.0.0.1:{cfg['hook_port']}/hook", {"X-Switchboard-Key": "hk"}
+    try:
+        async with ClientSession() as c:
+            r = await c.post(base + "/api/sessions", json={"kind": "shell", "cwd": home, "name": "w1"}, headers=H, ssl=ctx)
+            sid = (await r.json())["id"]
+            sessions = await (await c.get(base + "/api/sessions", headers=H, ssl=ctx)).json()
+            pane = next(x for x in sessions if x["id"] == sid)["pane"]
+            assert pane.startswith("%")
+
+            # raw terminal: starts with a repaint, then live output
+            ws = await c.ws_connect(base + f"/api/sessions/{sid}/term?mode=fixed", headers=H, ssl=ctx)
+            await ws.send_bytes(b"for i in $(seq 1 80); do echo hist$i; done; echo kp-$((40+2))\r")
+            seen, t0 = b"", time.time()
+            while b"kp-42" not in seen and time.time() - t0 < 8:
+                m = await asyncio.wait_for(ws.receive(), 4)
+                if isinstance(m.data, bytes):
+                    seen += m.data
+            assert b"kp-42" in seen
+            await ws.close()
+
+            # reader proto 2: the deep seed holds the scrollback that left the 40-row screen
+            ws = await c.ws_connect(base + f"/api/sessions/{sid}/term?mode=reader&proto=2", headers=H, ssl=ctx)
+            m = json.loads((await asyncio.wait_for(ws.receive(), 4)).data)
+            assert m["full"] and any(l == "hist1" for l in m["tail"]) and m["w"] == 120
+            await ws.close()
+
+            # hook from the chat's pane + a dialog on screen -> alert -> answered by pressing the key
+            r = await c.post(hook, json={"_pane": pane, "hook_event_name": "UserPromptSubmit", "prompt": "x"}, headers=hh)
+            assert "ignored" not in await r.json()
+            await c.post(base + f"/api/sessions/{sid}/keys", headers=H, ssl=ctx, json={
+                "text": "printf ' Do you want to proceed?\\n ❯ 1. Yes\\n   2. No\\n'; read -n1 k; echo GOT=$k", "keys": ["Enter"]})
+            await asyncio.sleep(1.0)
+            r = await c.post(hook, json={"_pane": pane, "_kind": "claude", "hook_event_name": "PermissionRequest",
+                                         "tool_name": "Bash", "tool_input": {"command": "ls"}}, headers=hh)
+            aid = (await r.json())["alert"]
+            r = await c.post(base + f"/api/alerts/{aid}/answer", json={"key": "no"}, headers=H, ssl=ctx)
+            assert (await r.json())["answered"] == "No"
+            await asyncio.sleep(0.8)
+            screen = (await (await c.get(base + f"/api/sessions/{sid}/screen", headers=H, ssl=ctx)).json())["text"]
+            assert "GOT=2" in screen
+
+            assert (await c.post(base + f"/api/sessions/{sid}/rename", json={"name": "r"}, headers=H, ssl=ctx)).status == 200
+            assert (await c.delete(base + f"/api/sessions/{sid}", headers=H, ssl=ctx)).status == 200
+            assert await (await c.get(base + "/api/sessions", headers=H, ssl=ctx)).json() == []
+    finally:
+        task.cancel()
+        await keeper.close()
 
 
 # ---------------------------------------------------------------- devices + pairing (proto 2)

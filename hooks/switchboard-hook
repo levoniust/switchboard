@@ -4,11 +4,13 @@
 import json, os, sys, urllib.request
 
 def main():
-    pane = os.environ.get("TMUX_PANE", "")
+    # Linux: tmux sets TMUX_PANE; Windows: sbkeeper sets SWITCHBOARD_PANE
+    pane = os.environ.get("TMUX_PANE") or os.environ.get("SWITCHBOARD_PANE") or ""
     if not pane:
         return
+    default = os.path.join(os.environ.get("LOCALAPPDATA", "~"), "switchboard") if os.name == "nt" else "~/.config/switchboard"
     try:
-        port, key = open(os.path.join(os.path.expanduser(os.environ.get("SWITCHBOARD_HOME", "~/.config/switchboard")), "hook.key")).read().split()
+        port, key = open(os.path.join(os.path.expanduser(os.environ.get("SWITCHBOARD_HOME", default)), "hook.key")).read().split()
         ev = json.load(sys.stdin)
     except Exception:
         return
