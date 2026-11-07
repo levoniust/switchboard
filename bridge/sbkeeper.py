@@ -9,7 +9,7 @@ Each chat is a ConPTY console (pywinpty) whose output feeds a pyte terminal emul
 scrollback. The node (switchboard.py) talks to it over 127.0.0.1 with a shared key; it can restart or update
 without ending any chat. Keep this file small and boring: updating it ends every open chat.
 
-usage: sbkeeper.py [--port 8097]          key: <switchboard home>/keeper.key (created on first run)
+usage: sbkeeper.py [--port 8097] [--init]   key: <switchboard home>/keeper.key (created on first run)
 
 API (header X-Keeper-Key):
   GET    /windows                         list of chats
@@ -442,7 +442,11 @@ async def serve(port, key):
 def main():
     ap = argparse.ArgumentParser(prog="sbkeeper")
     ap.add_argument("--port", type=int)
+    ap.add_argument("--init", action="store_true", help="only create keeper.key, then exit")
     a = ap.parse_args()
+    if a.init:
+        load_key(home_dir())
+        return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         filename=os.path.join(home_dir(), "sbkeeper.log") if IS_WINDOWS else None)
     port, key = load_key(home_dir())

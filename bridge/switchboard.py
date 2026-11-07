@@ -871,7 +871,9 @@ async def serve(cfg):
     ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     d = sbcore.config_dir()
     ctx.load_cert_chain(os.path.join(d, "cert.pem"), os.path.join(d, "key.pem"))
-    for host in cfg["hosts"]:
+    # "bind" (optional) = where to listen, when that differs from the addresses devices use ("hosts"), e.g. a
+    # laptop whose Wi-Fi address changes: bind ["0.0.0.0"] and let the firewall decide who gets in
+    for host in cfg.get("bind") or cfg["hosts"]:
         try:
             await web.TCPSite(runner, host, cfg["port"], ssl_context=ctx).start()
             log.info("listening on https://%s:%s", host, cfg["port"])
@@ -904,7 +906,9 @@ def main():
     dv.add_argument("arg", nargs="?")
     pu = sub.add_parser("push"); pu.add_argument("state", nargs="?", choices=["on", "off", "test", "status"], default="status")
     a = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # Windows runs the node with pythonw (no console): log to a file next to the config instead
+    logfile = os.path.join(sbcore.config_dir(), "switchboard.log") if sbcore.IS_WINDOWS and a.cmd == "serve" else None
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", filename=logfile)
     if a.cmd == "init":
         cmd_init(a)
     elif a.cmd == "serve":
