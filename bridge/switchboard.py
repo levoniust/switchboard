@@ -1,7 +1,8 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["aiohttp>=3.9,<4", "segno>=1.6"]
+# dependencies = ["aiohttp>=3.9,<4", "segno>=1.6", "cryptography>=42", "psutil>=5.9; sys_platform == 'win32'",
+#                 "pywinpty>=2.0; sys_platform == 'win32'", "pyte>=0.8; sys_platform == 'win32'"]
 # ///
 """Switchboard bridge: lets the Switchboard Android app drive Claude Code / claude-local chats living in tmux.
 
@@ -15,19 +16,24 @@ usage:
 import argparse
 import asyncio
 import base64
-import fcntl
 import hashlib
 import json
 import logging
 import os
+import platform
 import secrets
 import signal
 import ssl
 import struct
 import subprocess
 import sys
-import termios
 import time
+
+try:  # Linux only (PTY window size); Windows nodes use sbkeeper instead
+    import fcntl
+    import termios
+except ImportError:
+    fcntl = termios = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sbcore  # noqa: E402
@@ -48,7 +54,8 @@ def cmd_init(a):
     hosts = [h for h in (a.hosts or "").split(",") if h] or cfg.get("hosts") or _guess_hosts()
     cfg.update({"hosts": hosts, "port": a.port or cfg.get("port", 8095), "hook_port": cfg.get("hook_port", 8096),
                 "tmux_session": a.tmux_session or cfg.get("tmux_session", "AI"),
-                "roots": cfg.get("roots") or [os.path.expanduser("~")], "name": cfg.get("name") or os.uname().nodename})
+                "roots": cfg.get("roots") or [os.path.expanduser("~")], "name": cfg.get("name") or platform.node()})
+    cfg.setdefault("node_id", secrets.token_hex(8))
     cfg.setdefault("token", sbcore.new_token())
     cfg.setdefault("hook_key", secrets.token_hex(16))
     push = cfg.setdefault("push", {})
@@ -56,26 +63,24 @@ def cmd_init(a):
         push.update(ha_url=a.ha_url, ha_notify=a.ha_notify, ha_token_file=a.ha_token_file or "~/.ha_token", enabled=True)
     if a.vigil_url:
         cfg["vigil_url"] = a.vigil_url
-    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-        json.dump(cfg, f, indent=2)
-    os.chmod(path, 0o600)  # an existing file keeps its old mode on open()
+    sbcore.write_private_json(path, cfg)  # replaces the file, so an old file's looser mode goes too
     hook_key = os.path.join(d, "hook.key")
     with os.fdopen(os.open(hook_key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(f"{cfg['hook_port']} {cfg['hook_key']}\n")
     os.chmod(hook_key, 0o600)
     cert, key = os.path.join(d, "cert.pem"), os.path.join(d, "key.pem")
     if not os.path.exists(cert) or a.new_cert:
-        san = ",".join([f"IP:{h}" if h.replace(".", "").isdigit() else f"DNS:{h}" for h in hosts] + ["IP:127.0.0.1"])
-        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-                        "-days", "3650", "-subj", f"/CN=switchboard-{cfg['name']}", "-addext", f"subjectAltName={san}",
-                        "-keyout", key, "-out", cert], check=True, capture_output=True)
-        os.chmod(key, 0o600)
+        sbcore.make_cert(cert, key, hosts, cfg["name"])
     print(f"config: {path}\nhosts: {', '.join(hosts)}  port: {cfg['port']}\ncert pin: {cert_pin(cert)}")
 
 
 def _guess_hosts():
-    out = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()
-    return [h for h in out if h.count(".") == 3]
+    if sbcore.IS_WINDOWS:
+        import socket
+        out = {ai[4][0] for ai in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
+    else:
+        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()
+    return [h for h in out if h.count(".") == 3 and not h.startswith("127.")]
 
 
 def cert_pin(cert_path):
@@ -168,6 +173,12 @@ class Bridge:
                 self.sessions.get(a["pane"]).update(status=a["type"], pending=a["id"], kind=a.get("kind"))
 
     # ---- helpers
+    def features(self):
+        f = ["reader2", "fs", "upload"]
+        if self.cfg.get("vigil_url"):
+            f.append("vigil")
+        return f
+
     def auth_ok(self, request):
         tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
         tok = tok or request.query.get("token", "") or request.cookies.get("sb", "")
@@ -251,7 +262,9 @@ class Bridge:
 
     # ---- REST
     async def info(self, request):
-        return web.json_response({"name": self.cfg["name"], "version": VERSION, "kinds": [l["kind"] for l in sbcore.launchers(self.cfg)],
+        return web.json_response({"name": self.cfg["name"], "version": VERSION, "node_id": self.cfg.get("node_id"),
+                                  "os": sbcore.os_name(), "proto": sbcore.PROTO, "features": self.features(),
+                                  "kinds": [l["kind"] for l in sbcore.launchers(self.cfg)],
                                   "launchers": sbcore.public_launchers(self.cfg),
                                   "roots": self.cfg["roots"], "vigil": bool(self.cfg.get("vigil_url"))})
 
@@ -702,6 +715,7 @@ def make_app(bridge):
 
 
 async def serve(cfg):
+    sbcore.ensure_node_id(cfg)
     bridge = Bridge(cfg)
     bridge.loop = asyncio.get_running_loop()
     bridge.http = ClientSession(timeout=ClientTimeout(total=30))

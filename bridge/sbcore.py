@@ -4,6 +4,7 @@ Kept free of aiohttp so it can be unit-tested on its own.
 """
 import json
 import os
+import platform
 import re
 import secrets
 import sqlite3
@@ -52,8 +53,75 @@ def public_launchers(cfg):
 
 # ---------------------------------------------------------------- config
 
+IS_WINDOWS = os.name == "nt"
+PROTO = 2  # docs/NETWORK-PROTOCOL.md
+
+
 def config_dir():
-    return os.path.expanduser(os.environ.get("SWITCHBOARD_HOME", "~/.config/switchboard"))
+    default = os.path.join(os.environ.get("LOCALAPPDATA", "~"), "switchboard") if IS_WINDOWS else "~/.config/switchboard"
+    return os.path.expanduser(os.environ.get("SWITCHBOARD_HOME", default))
+
+
+def os_name():
+    return "windows" if IS_WINDOWS else "linux"
+
+
+def ensure_node_id(cfg, path=None):
+    """Every node has a random id that never changes (the app keys chats and alerts by it). Created on first use and
+    written back to config.json."""
+    if cfg.get("node_id"):
+        return cfg["node_id"]
+    cfg["node_id"] = secrets.token_hex(8)
+    path = path or os.path.join(config_dir(), "config.json")
+    try:
+        with open(path) as f:
+            disk = json.load(f)
+        disk["node_id"] = cfg["node_id"]
+        write_private_json(path, disk)
+    except OSError:
+        pass  # no config file (tests): the id lives for this run only
+    return cfg["node_id"]
+
+
+def write_private_json(path, data):
+    """Write JSON readable only by the owner (atomic replace)."""
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def make_cert(cert_path, key_path, hosts, name, days=3650):
+    """Self-signed EC P-256 certificate for the node's addresses (the app pins its SHA-256, so no CA is involved).
+    Uses the cryptography package so it works on Windows too (no openssl binary needed)."""
+    import datetime
+    import ipaddress
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    sans = []
+    for h in list(hosts) + ["127.0.0.1"]:
+        try:
+            sans.append(x509.IPAddress(ipaddress.ip_address(h)))
+        except ValueError:
+            sans.append(x509.DNSName(h))
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"switchboard-{name}")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=days))
+            .add_extension(x509.SubjectAlternativeName(list(dict.fromkeys(sans))), critical=False)
+            .sign(key, hashes.SHA256()))
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption()))
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
 
 
 def load_config():
@@ -65,7 +133,8 @@ def load_config():
     cfg.setdefault("tmux_session", "AI")
     cfg.setdefault("roots", [os.path.expanduser("~")])
     cfg.setdefault("push", {})
-    cfg.setdefault("name", os.uname().nodename)
+    cfg.setdefault("name", platform.node())
+    cfg.setdefault("legacy_token", True)
     return cfg
 
 

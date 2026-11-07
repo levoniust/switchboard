@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["aiohttp>=3.9,<4", "segno>=1.6", "pytest>=8", "pytest-asyncio>=0.23"]
+# dependencies = ["aiohttp>=3.9,<4", "segno>=1.6", "cryptography>=42", "pytest>=8", "pytest-asyncio>=0.23"]
 # ///
 """Bridge tests. Run: uv run --script test_bridge.py  (uses a throwaway tmux session, never "AI")."""
 import asyncio
@@ -297,6 +297,9 @@ async def test_end_to_end(bridge_env):
             assert r.status == 401
             r = await c.get(base + "/api/sessions", params={"token": "tök"}, ssl=ctx)
             assert r.status == 401  # non-ASCII token: rejected, not a 500
+            info = await (await c.get(base + "/api/info", headers=H, ssl=ctx)).json()
+            assert info["proto"] == 2 and info["os"] == "linux" and len(info["node_id"]) == 16
+            assert "reader2" in info["features"]
 
             # download link: the pairing page (it shows the token) opens once, the APK stays downloadable
             open(os.path.join(home, "switchboard.apk"), "wb").write(b"apk")
@@ -467,6 +470,31 @@ def test_detect_kind_match(monkeypatch, tmp_path):
     assert sbcore.detect_kind(1, cfg) == "claude-local"
     files["/proc/7/environ"] = b"PATH=/bin\0"
     assert sbcore.detect_kind(1, cfg) == "claude"
+
+
+# ---------------------------------------------------------------- node identity (proto 2)
+
+def test_make_cert_and_pin(tmp_path):
+    from cryptography import x509
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    sbcore.make_cert(str(cert), str(key), ["192.0.2.5", "node.example"], "n1")
+    c = x509.load_pem_x509_certificate(cert.read_bytes())
+    san = c.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "node.example" in san.get_values_for_type(x509.DNSName)
+    assert {str(i) for i in san.get_values_for_type(x509.IPAddress)} == {"192.0.2.5", "127.0.0.1"}
+    assert oct(key.stat().st_mode & 0o777) == "0o600"
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(str(cert), str(key))  # usable by the server
+
+
+def test_node_id_created_once(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"name": "x"}))
+    cfg = {"name": "x"}
+    nid = sbcore.ensure_node_id(cfg, str(path))
+    assert len(nid) == 16 and json.loads(path.read_text())["node_id"] == nid
+    assert sbcore.ensure_node_id(cfg, str(path)) == nid
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
 
 
 if __name__ == "__main__":
