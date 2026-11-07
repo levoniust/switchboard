@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import '../core/api.dart';
+import '../core/hub.dart';
 import '../core/platform.dart';
 import '../main.dart';
 import '../skins/chrome.dart';
@@ -88,44 +88,31 @@ class SettingsScreen extends StatelessWidget {
               value: settings.haptics,
               onChanged: settings.setHaptics,
             ),
-          _section(skin, 'Connection'),
-          ListTile(
-            title: Text(hub.server?.name ?? 'Not paired', style: TextStyle(color: skin.fg)),
-            subtitle: Text(
-              '${hub.server?.hosts.join(' → ') ?? ''}\nusing ${hub.api?.activeHost ?? '—'} · ${hub.link.name}',
-              style: TextStyle(color: skin.dim, fontFamily: 'JetBrainsMono', fontSize: 12),
-            ),
-            isThreeLine: true,
-            trailing: IconButton(icon: const Icon(Icons.refresh), onPressed: hub.connect),
-          ),
-          ListTile(
-            leading: const Icon(Icons.link),
-            title: Text('Pair again', style: TextStyle(color: skin.fg)),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PairScreen())),
-          ),
-          ListTile(
-            leading: Icon(Icons.link_off, color: skin.danger),
-            title: Text('Forget this bridge', style: TextStyle(color: skin.danger)),
-            onTap: () async {
-              final ok = await showDialog<bool>(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: const Text('Forget the bridge?'),
-                  content: const Text('The app deletes its access key. You will need a new pairing link.'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                    FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Forget')),
-                  ],
+          _section(skin, 'Machines'),
+          for (final n in hub.nodes)
+            ListTile(
+              leading: Icon(n.os == 'windows' ? Icons.laptop_windows : Icons.dns_outlined,
+                  color: n.link == LinkState.online ? skin.accent : skin.dim),
+              title: Text(n.name, style: TextStyle(color: skin.fg)),
+              subtitle: Text(
+                '${n.server?.hosts.join(' → ') ?? ''}\nusing ${n.api?.activeHost ?? '—'} · ${n.link.name}',
+                style: TextStyle(color: skin.dim, fontFamily: 'JetBrainsMono', fontSize: 12),
+              ),
+              isThreeLine: true,
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(tooltip: 'Reconnect', icon: const Icon(Icons.refresh), onPressed: n.connect),
+                IconButton(
+                  tooltip: 'Forget this machine',
+                  icon: Icon(Icons.link_off, color: skin.danger),
+                  onPressed: () => _forget(context, n),
                 ),
-              );
-              if (ok == true) {
-                await Server.forget();
-                hub.pause();
-                hub.server = null;
-                hub.api = null;
-                navKey.currentState?.pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const PairScreen()), (_) => false);
-              }
-            },
+              ]),
+            ),
+          ListTile(
+            leading: const Icon(Icons.add_link),
+            title: Text('Add a machine', style: TextStyle(color: skin.fg)),
+            subtitle: Text('or pair one again: run `switchboard pair` on it', style: TextStyle(color: skin.dim)),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PairScreen())),
           ),
           _section(skin, 'Notifications'),
           Padding(
@@ -152,6 +139,26 @@ class SettingsScreen extends StatelessWidget {
         ]);
       },
     );
+  }
+
+  Future<void> _forget(BuildContext context, NodeLink n) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Forget ${n.name}?'),
+        content: const Text('The app asks the machine to revoke this device\'s key, then deletes it here. '
+            'You will need a new pairing code to add it again.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Forget')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await hub.remove(n);
+    if (!hub.paired) {
+      navKey.currentState?.pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const PairScreen()), (_) => false);
+    }
   }
 
   Widget _section(Skin skin, String t) => Padding(

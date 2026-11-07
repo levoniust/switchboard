@@ -28,10 +28,10 @@ class AlertsScreen extends StatelessWidget {
                 skin: skin,
                 tint: a.needsAnswer ? statusColor(skin, a.type) : (a.type == 'done' ? skin.ok : skin.dim),
                 onTap: () {
-                  final s = hub.sessionByPane(a.pane);
+                  final s = hub.sessionFor(a);
                   if (s != null) openTerminal(s);
                 },
-                child: a.needsAnswer && hub.sessionByPane(a.pane)?.pending?.id == a.id
+                child: a.needsAnswer && hub.sessionFor(a)?.pending?.id == a.id
                     ? Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                         _meta(a, skin),
                         const SizedBox(height: 6),
@@ -60,7 +60,8 @@ class AlertsScreen extends StatelessWidget {
     final hh = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
     final day = DateTime.now().difference(t).inHours > 20 ? '${t.month}/${t.day} ' : '';
     final icon = {'done': '✓', 'permission': '⚿', 'question': '?'}[a.type] ?? '•';
-    return Text('$icon  ${a.sessionName ?? a.pane ?? ''} · ${a.kind ?? ''} · $day$hh · ${a.state}',
+    final machine = hub.nodes.length > 1 && a.node != null ? '${a.node!.name} · ' : '';
+    return Text('$icon  $machine${a.sessionName ?? a.pane ?? ''} · ${a.kind ?? ''} · $day$hh · ${a.state}',
         style: TextStyle(color: skin.dim, fontSize: 11, fontFamily: 'JetBrainsMono'));
   }
 }

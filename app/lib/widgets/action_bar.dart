@@ -35,7 +35,7 @@ class _ActionBarState extends State<ActionBar> {
   Future<void> _loadOptions() async {
     try {
       for (var i = 0; i < 3 && mounted; i++) {
-        final a = await hub.alert(widget.alert.id);
+        final a = await (widget.alert.node ?? hub.node(null)!).alert(widget.alert.id);
         if (a.screenOptions.length >= 2) {
           if (mounted) setState(() => _opts = a.screenOptions);
           return;
@@ -57,7 +57,7 @@ class _ActionBarState extends State<ActionBar> {
     setState(() => _busy = true);
     if (settings.haptics) HapticFeedback.lightImpact();
     try {
-      final label = await hub.answer(widget.alert.id, o.key);
+      final label = await hub.answer(widget.alert, o.key);
       toast('Answered: $label');
     } catch (e) {
       toast('$e');

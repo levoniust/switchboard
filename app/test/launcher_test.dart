@@ -3,7 +3,7 @@ import 'package:switchboard/core/hub.dart';
 
 void main() {
   test('launchers parse from the bridge and fall back for unknown kinds', () {
-    final h = Hub();
+    final h = NodeLink();
     expect(h.launchers.map((l) => l.kind), ['claude', 'claude-local', 'shell']);
     h.launchers = [
       Launcher.fromJson({'kind': 'agent-b', 'label': 'Agent B', 'name': 'b', 'claude': true, 'accent': 2, 'icon': 'spark'}),
@@ -18,7 +18,7 @@ void main() {
   });
 
   test('Session.isClaude follows the launcher', () {
-    final h = Hub();
+    final h = NodeLink();
     h.launchers = [Launcher.fromJson({'kind': 'tool', 'claude': false})];
     expect(Session.fromJson({'id': '1', 'kind': 'tool'}).isClaude, false);
     expect(Session.fromJson({'id': '2', 'kind': 'shell'}).isClaude, false);

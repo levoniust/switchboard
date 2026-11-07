@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -6,7 +8,14 @@ import '../core/platform.dart';
 import '../main.dart';
 import '../skins/chrome.dart';
 
-/// First run (or re-pair): accept a `switchboard://pair/…` link, test it, save it.
+/// The name a machine shows for this device in `switchboard devices`.
+String deviceName() {
+  final host = Platform.localHostname;
+  final kind = Platform.isAndroid ? 'phone' : Platform.operatingSystem;
+  return host.isEmpty || host == 'localhost' ? 'Switchboard $kind' : '$host ($kind)';
+}
+
+/// Add (or re-pair) a machine: accept a `switchboard://pair/…` link, trade its one-time code for a key, save it.
 class PairScreen extends StatefulWidget {
   final Server? initial;
   const PairScreen({super.key, this.initial});
@@ -46,16 +55,19 @@ class _PairScreenState extends State<PairScreen> {
       return;
     }
     try {
-      final info = await api.get('/api/info') as Map;
-      await s.save();
-      await hub.start(s);
+      // v2 links carry a one-time code: trade it for this device's own key
+      final server = s.code != null ? await api.redeem(deviceName()) : s;
+      final info = await Api(server).get('/api/info') as Map;
+      await hub.add(server.copyWith(id: info['node_id'] as String?, name: info['name'] as String?));
       if (!mounted) return;
       setState(() => _status = 'Paired with ${info['name']} via $host.');
       navKey.currentState?.pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const HomeScreen()), (_) => false);
     } catch (e) {
       setState(() {
         _busy = false;
-        _status = 'The bridge answered but refused the key: $e';
+        _status = s.code != null
+            ? 'The machine refused the code: $e\nCodes work once and expire after 10 minutes: run `switchboard pair` again.'
+            : 'The bridge answered but refused the key: $e';
       });
     }
   }
@@ -67,15 +79,16 @@ class _PairScreenState extends State<PairScreen> {
       body: SkinBackground(
         skin: skin,
         child: ListView(padding: EdgeInsets.zero, children: [
-          SkinHeader(skin: skin, title: 'Pair', subtitle: isPhone ? 'connect this phone to your computer' : 'connect this device to the bridge'),
+          SkinHeader(skin: skin, title: 'Pair', subtitle: isPhone ? 'connect this phone to a computer' : 'connect this device to a machine'),
           SkinPanel(
             skin: skin,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('On the computer running the bridge, run', style: TextStyle(color: skin.dim)),
+              Text('On the machine you want to add, run', style: TextStyle(color: skin.dim)),
               const SizedBox(height: 6),
               SelectableText('switchboard pair', style: TextStyle(fontFamily: 'JetBrainsMono', color: skin.accent)),
               const SizedBox(height: 10),
-              Text('${isPhone ? 'Tap the link it prints (or scan its QR code with the camera), or paste' : 'Copy the link it prints and paste'} the link here:',
+              Text('${isPhone ? 'Scan its QR code with the phone camera (or tap the link it prints), or paste' : 'Copy the link it prints and paste'} the link here. '
+                  'Each machine you add shows up in the chat list.',
                   style: TextStyle(color: skin.fg)),
               const SizedBox(height: 10),
               TextField(

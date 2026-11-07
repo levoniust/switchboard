@@ -13,7 +13,10 @@ class Session {
   final Alert? pending;
   final int index;
 
-  Session.fromJson(Map<String, dynamic> j)
+  /// The machine this chat runs on (null only in tests).
+  final NodeLink? node;
+
+  Session.fromJson(Map<String, dynamic> j, [this.node])
       : id = j['id'] as String,
         index = (j['index'] as num?)?.toInt() ?? 0,
         name = j['name'] as String? ?? '',
@@ -23,14 +26,18 @@ class Session {
         status = j['status'] as String? ?? 'idle',
         last = j['last'] as String? ?? '',
         model = j['model'] as String?,
-        pending = j['pending'] == null ? null : Alert.fromJson(j['pending'] as Map<String, dynamic>);
+        pending = j['pending'] == null ? null : Alert.fromJson(j['pending'] as Map<String, dynamic>, node);
 
   String get shortCwd {
-    final parts = cwd.split('/').where((p) => p.isNotEmpty).toList();
-    return parts.length <= 2 ? cwd : '…/${parts.sublist(parts.length - 2).join('/')}';
+    final sep = cwd.contains('\\') ? '\\' : '/';
+    final parts = cwd.split(sep).where((p) => p.isNotEmpty).toList();
+    return parts.length <= 2 ? cwd : '…$sep${parts.sublist(parts.length - 2).join(sep)}';
   }
 
-  bool get isClaude => hub0?.launcher(kind).claude ?? kind != 'shell';
+  bool get isClaude => (node ?? hub0)?.launcher(kind).claude ?? kind != 'shell';
+
+  /// Unique across machines (ids and panes are only unique within one machine).
+  String get key => '${node?.id ?? ''}|$id';
 }
 
 /// One entry of the bridge's "new chat" menu (GET /api/info "launchers"). The bridge owner names them
@@ -56,8 +63,8 @@ class Launcher {
   ];
 }
 
-/// Set by [Hub]'s constructor so [Session] can look up its launcher without importing main.dart.
-Hub? hub0;
+/// The last [NodeLink] created: lets a [Session] without a machine (tests) still find launchers.
+NodeLink? hub0;
 
 class AlertOption {
   final String key, label, detail;
@@ -72,8 +79,9 @@ class Alert {
   final String? answered;
   final List<AlertOption> options;
   final List<AlertOption> screenOptions;
+  final NodeLink? node;
 
-  Alert.fromJson(Map<String, dynamic> j)
+  Alert.fromJson(Map<String, dynamic> j, [this.node])
       : id = (j['id'] as num).toInt(),
         ts = (j['ts'] as num?)?.toDouble() ?? 0,
         pane = j['pane'] as String?,
@@ -98,12 +106,24 @@ class Alert {
 
 enum LinkState { offline, connecting, online }
 
-/// Live app state: sessions, alerts, connection. Keeps one events WebSocket open while the app runs and
+/// One machine: its sessions, alerts and connection. Keeps one events WebSocket open while the app runs and
 /// reconnects with backoff (network switches between home Wi-Fi and Tailscale are expected).
-class Hub extends ChangeNotifier {
-  Hub() {
+class NodeLink extends ChangeNotifier {
+  NodeLink([Server? s]) {
     hub0 = this;
+    if (s != null) {
+      server = s;
+      api = Api(s);
+    }
   }
+
+  /// Node id, or (old bridges) a stand-in made from the certificate pin.
+  String get id => server?.id ?? 'pin:${server?.pin.substring(0, 12) ?? ''}';
+  String get name => server?.name ?? '';
+  String os = 'linux';
+  bool vigil = false;
+  List<String> features = [];
+  String sep = '/';
 
   Api? api;
   List<Launcher> launchers = Launcher.defaults;
@@ -139,11 +159,13 @@ class Hub extends ChangeNotifier {
     server = s;
     launchers = Launcher.defaults;
     _launchersLoaded = false;
-    promptHost = s.name.toLowerCase();
     api = Api(s);
     _paused = false; // a new pairing starts fresh, even right after "Forget"
     await connect();
   }
+
+  /// Called when /api/info reveals the node id of a machine paired with an old (v1) link.
+  void Function(NodeLink)? onIdentified;
 
   Future<void> connect() async {
     if (api == null || _paused) return;
@@ -210,6 +232,15 @@ class Hub extends ChangeNotifier {
     if (!_launchersLoaded) {
       try {
         final info = await api!.get('/api/info') as Map;
+        os = info['os'] as String? ?? 'linux';
+        sep = os == 'windows' ? '\\' : '/';
+        vigil = info['vigil'] == true;
+        features = ((info['features'] as List?) ?? const []).cast<String>();
+        final nid = info['node_id'] as String?;
+        if (nid != null && server != null && server!.id != nid) {
+          server = server!.copyWith(id: nid);
+          onIdentified?.call(this);
+        }
         final ls = info['launchers'] as List?;
         if (ls != null && ls.isNotEmpty) {
           launchers = ls.map((j) => Launcher.fromJson(j as Map<String, dynamic>)).toList();
@@ -218,10 +249,10 @@ class Hub extends ChangeNotifier {
       } catch (_) {} // older bridge or a blip: keep the defaults, try again next refresh
     }
     final s = await api!.get('/api/sessions') as List;
-    sessions = s.map((j) => Session.fromJson(j as Map<String, dynamic>)).toList()
+    sessions = s.map((j) => Session.fromJson(j as Map<String, dynamic>, this)).toList()
       ..sort((a, b) => a.index.compareTo(b.index));
     final a = await api!.get('/api/alerts') as List;
-    alerts = a.map((j) => Alert.fromJson(j as Map<String, dynamic>)).toList();
+    alerts = a.map((j) => Alert.fromJson(j as Map<String, dynamic>, this)).toList();
     notifyListeners();
   }
 
@@ -230,7 +261,7 @@ class Hub extends ChangeNotifier {
     final m = jsonDecode(data) as Map<String, dynamic>;
     switch (m['type']) {
       case 'alert':
-        final a = Alert.fromJson(m['alert'] as Map<String, dynamic>);
+        final a = Alert.fromJson(m['alert'] as Map<String, dynamic>, this);
         alerts.insert(0, a);
         _alertCtrl.add(a);
         refresh().ignore();
@@ -270,7 +301,7 @@ class Hub extends ChangeNotifier {
   int get openCount => alerts.where((a) => a.needsAnswer).length;
 
   Future<Alert> alert(int id) async =>
-      Alert.fromJson(await api!.get('/api/alerts/$id') as Map<String, dynamic>);
+      Alert.fromJson(await api!.get('/api/alerts/$id') as Map<String, dynamic>, this);
 
   Future<String> answer(int id, String key) async {
     final r = await api!.post('/api/alerts/$id/answer', {'key': key}) as Map;
@@ -299,8 +330,173 @@ class Hub extends ChangeNotifier {
 
   @override
   void dispose() {
+    _paused = true;
     _retry?.cancel();
     _ws?.close();
+    _alertCtrl.close();
+    super.dispose();
+  }
+}
+
+/// Every paired machine at once: the app's view merges their chats and alerts. Each [NodeLink] connects on its
+/// own, so one machine being off never affects the others.
+class Fleet extends ChangeNotifier {
+  final List<NodeLink> nodes = [];
+  final _alertCtrl = StreamController<Alert>.broadcast();
+  final _subs = <NodeLink, StreamSubscription<Alert>>{};
+  Stream<Alert> get newAlerts => _alertCtrl.stream;
+  bool _windowActive = true;
+  Session? _focus;
+
+  bool get paired => nodes.isNotEmpty;
+
+  Future<void> start(List<Server> servers) async {
+    for (final s in servers) {
+      _attach(NodeLink());
+      nodes.last.server = s;
+    }
+    _sortForPrompt();
+    notifyListeners();
+    await Future.wait(nodes.map((n) => n.start(n.server!)));
+  }
+
+  void _attach(NodeLink n) {
+    nodes.add(n);
+    n.addListener(notifyListeners);
+    n.onIdentified = (_) => _save();
+    _subs[n] = n.newAlerts.listen(_alertCtrl.add);
+  }
+
+  void _sortForPrompt() => promptHost = nodes.isEmpty ? 'switchboard' : nodes.first.name.toLowerCase();
+
+  Future<void> _save() => Server.saveAll([for (final n in nodes) if (n.server != null) n.server!]);
+
+  /// Adds a newly paired machine, or replaces the entry of the same machine (re-pairing).
+  Future<NodeLink> add(Server s) async {
+    final old = nodes.where((n) => n.server != null && n.server!.sameMachine(s)).toList();
+    for (final n in old) {
+      _detach(n);
+    }
+    final n = NodeLink()..server = s;
+    _attach(n);
+    await _save();
+    _sortForPrompt();
+    notifyListeners();
+    await n.start(s);
+    return n;
+  }
+
+  void _detach(NodeLink n) {
+    nodes.remove(n);
+    n.removeListener(notifyListeners);
+    _subs.remove(n)?.cancel();
+    n.dispose();
+  }
+
+  /// Forgets a machine: tells it to revoke this device's key (best effort), then drops it here.
+  Future<void> remove(NodeLink n) async {
+    try {
+      final r = await n.api?.get('/api/devices') as Map?;
+      final me = r?['you'] as String?;
+      if (me != null && me != 'legacy') await n.api!.delete('/api/devices/$me');
+    } catch (_) {} // offline machine: its key stays valid until revoked there (switchboard devices revoke)
+    _detach(n);
+    await _save();
+    _sortForPrompt();
+    notifyListeners();
+  }
+
+  NodeLink? node(String? id) {
+    if (nodes.isEmpty) return null;
+    if (id == null || id.isEmpty) return nodes.first; // links from old pushes: the first machine
+    for (final n in nodes) {
+      if (n.id == id) return n;
+    }
+    return null;
+  }
+
+  List<Session> get sessions => [for (final n in nodes) ...n.sessions];
+
+  List<Alert> get alerts => [for (final n in nodes) ...n.alerts]..sort((a, b) => b.ts.compareTo(a.ts));
+
+  int get openCount => nodes.fold(0, (sum, n) => sum + n.openCount);
+
+  /// online if any machine is, connecting if any is trying, else offline.
+  LinkState get link => nodes.any((n) => n.link == LinkState.online)
+      ? LinkState.online
+      : nodes.any((n) => n.link == LinkState.connecting)
+          ? LinkState.connecting
+          : LinkState.offline;
+
+  /// The machine that serves Vigil (the first that says it can).
+  NodeLink? get vigilNode {
+    for (final n in nodes) {
+      if (n.vigil) return n;
+    }
+    return nodes.isEmpty ? null : nodes.first;
+  }
+
+  Future<void> connect() => Future.wait(nodes.map((n) => n.connect()));
+  Future<void> refresh() => Future.wait(nodes.map((n) => n.refresh().catchError((_) {})));
+  void pause() {
+    for (final n in nodes) {
+      n.pause();
+    }
+  }
+
+  void resume() {
+    for (final n in nodes) {
+      n.resume();
+    }
+  }
+
+  bool get windowActive => _windowActive;
+  void setWindowActive(bool v) {
+    _windowActive = v;
+    for (final n in nodes) {
+      n.setWindowActive(v);
+    }
+  }
+
+  /// The chat on screen (null = the lists). Its machine is told that pane; the others just "app open".
+  void setFocus(Session? s) {
+    _focus = s;
+    for (final n in nodes) {
+      n.setFocus(s != null && s.node == n ? s.pane : null);
+    }
+  }
+
+  Session? get focused => _focus;
+
+  Session? sessionByPane(String? pane, [String? nodeId]) {
+    final n = node(nodeId);
+    if (nodeId != null && n != null) return n.sessionByPane(pane);
+    for (final x in nodes) {
+      final s = x.sessionByPane(pane);
+      if (s != null) return s;
+    }
+    return null;
+  }
+
+  Session? sessionById(String id, [String? nodeId]) {
+    if (nodeId != null) return node(nodeId)?.sessionById(id);
+    for (final x in nodes) {
+      final s = x.sessionById(id);
+      if (s != null) return s;
+    }
+    return null;
+  }
+
+  /// The session an alert belongs to (same machine, same pane).
+  Session? sessionFor(Alert a) => a.node?.sessionByPane(a.pane) ?? sessionByPane(a.pane);
+
+  Future<String> answer(Alert a, String key) => (a.node ?? nodes.first).answer(a.id, key);
+
+  @override
+  void dispose() {
+    for (final n in List.of(nodes)) {
+      _detach(n);
+    }
     _alertCtrl.close();
     super.dispose();
   }

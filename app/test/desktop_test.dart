@@ -13,10 +13,10 @@ void main() {
   tearDown(() => desktopOverride = null);
 
   test('focus sent to the bridge: a background window matches no chat, so the phone still gets pushed', () {
-    expect(Hub.focusValue('%3', true), '%3');
-    expect(Hub.focusValue(null, true), '*'); // app open, chat list on screen: banner instead of push
-    expect(Hub.focusValue('%3', false), '-');
-    expect(Hub.focusValue(null, false), '-');
+    expect(NodeLink.focusValue('%3', true), '%3');
+    expect(NodeLink.focusValue(null, true), '*'); // app open, chat list on screen: banner instead of push
+    expect(NodeLink.focusValue('%3', false), '-');
+    expect(NodeLink.focusValue(null, false), '-');
   });
 
   test('extra keys bar: on by default on the phone, off on a computer, and the choice sticks', () async {

@@ -19,13 +19,15 @@ class SessionsScreen extends StatelessWidget {
       builder: (context, _) {
         final skin = settings.skin;
         final link = hub.link;
-        final via = hub.api?.activeHost;
-        final where = via == null ? '' : (via.startsWith('100.') ? 'tailscale' : 'home lan');
-        final sub = switch (link) {
-          LinkState.online => '${hub.server?.name ?? ''} · $where',
-          LinkState.connecting => 'connecting…',
-          LinkState.offline => 'offline${hub.error != null ? ' · retrying' : ''}',
-        };
+        final multi = hub.nodes.length > 1;
+        final up = hub.nodes.where((n) => n.link == LinkState.online).length;
+        final sub = multi
+            ? '$up of ${hub.nodes.length} machines online'
+            : switch (link) {
+                LinkState.online => '${hub.nodes.first.name} · ${where(hub.nodes.first)}',
+                LinkState.connecting => 'connecting…',
+                LinkState.offline => 'offline${hub.nodes.isNotEmpty && hub.nodes.first.error != null ? ' · retrying' : ''}',
+              };
         final pending = hub.sessions.where((s) => s.pending != null).toList();
         final mood = link != LinkState.online
             ? 'offline'
@@ -67,7 +69,19 @@ class SessionsScreen extends StatelessWidget {
                   child: Text(link == LinkState.online ? 'No chats yet. Tap + to start one.' : 'Waiting for the bridge…',
                       textAlign: TextAlign.center, style: TextStyle(color: skin.dim)),
                 ),
-              for (final s in hub.sessions) _SessionCard(s: s, skin: skin),
+              if (!multi)
+                for (final s in hub.sessions) _SessionCard(s: s, skin: skin)
+              else
+                for (final n in hub.nodes) ...[
+                  MachineHeader(node: n, skin: skin),
+                  if (n.sessions.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                      child: Text(n.link == LinkState.online ? 'no chats' : 'not reachable right now',
+                          style: TextStyle(color: skin.dim, fontSize: 12)),
+                    ),
+                  for (final s in n.sessions) _SessionCard(s: s, skin: skin),
+                ],
             ]),
           ),
         );
@@ -95,6 +109,49 @@ class SessionsScreen extends StatelessWidget {
   }
 }
 
+/// "home lan" / "tailscale": how the app reaches a machine right now.
+String where(NodeLink n) {
+  final via = n.api?.activeHost;
+  return via == null ? '' : (via.startsWith('100.') ? 'tailscale' : 'home lan');
+}
+
+/// Machine name + status line above its chats (shown when more than one machine is paired).
+class MachineHeader extends StatelessWidget {
+  final NodeLink node;
+  final Skin skin;
+  const MachineHeader({super.key, required this.node, required this.skin});
+
+  @override
+  Widget build(BuildContext context) {
+    final on = node.link == LinkState.online;
+    final state = switch (node.link) {
+      LinkState.online => where(node),
+      LinkState.connecting => 'connecting…',
+      LinkState.offline => 'offline',
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+      child: Row(children: [
+        Icon(node.os == 'windows' ? Icons.laptop_windows : Icons.dns_outlined, size: 18, color: on ? skin.accent : skin.dim),
+        const SizedBox(width: 8),
+        Text(skin.head(node.name), style: TextStyle(color: skin.fg, fontWeight: FontWeight.w700, fontFamily: skin.headFont)),
+        const SizedBox(width: 8),
+        Icon(Icons.circle, size: 8, color: on ? skin.ok : skin.danger),
+        const SizedBox(width: 4),
+        Text(state, style: TextStyle(color: skin.dim, fontSize: 12)),
+        const Spacer(),
+        if (!on)
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Try again',
+            icon: const Icon(Icons.refresh, size: 18),
+            onPressed: node.connect,
+          ),
+      ]),
+    );
+  }
+}
+
 class _SessionCard extends StatelessWidget {
   final Session s;
   final Skin skin;
@@ -103,7 +160,7 @@ class _SessionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = statusColor(skin, s.status);
-    final l = hub.launcher(s.kind);
+    final l = (s.node ?? hub0)?.launcher(s.kind) ?? Launcher(s.kind, s.kind, s.kind);
     final kindLabel = l.label.toUpperCase();
     final kindColor = l.accent == 2 ? skin.accent2 : skin.accent;
     return SkinPanel(
@@ -179,13 +236,13 @@ class _SessionCard extends StatelessWidget {
           ],
         ),
       );
-      if (name != null && name.isNotEmpty) await hub.rename(s, name);
+      if (name != null && name.isNotEmpty) await s.node!.rename(s, name);
     } else if (choice == 'kill') {
       final ok = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(
           title: Text('End "${s.name}"?'),
-          content: const Text('This closes the tmux window and whatever runs in it. It cannot be undone.'),
+          content: const Text('This closes the chat window and whatever runs in it. It cannot be undone.'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep it')),
             FilledButton(
@@ -195,7 +252,7 @@ class _SessionCard extends StatelessWidget {
           ],
         ),
       );
-      if (ok == true) await hub.kill(s);
+      if (ok == true) await s.node!.kill(s);
     }
   }
 }
@@ -215,7 +272,9 @@ class NewSessionSheet extends StatefulWidget {
 }
 
 class _NewSessionSheetState extends State<NewSessionSheet> {
-  String kind = 'claude';
+  // the machine: the first one that is online (the user can switch when several are paired)
+  late NodeLink node = hub.nodes.firstWhere((n) => n.link == LinkState.online, orElse: () => hub.nodes.first);
+  late String kind = node.launchers.first.kind;
   String? path;
   List<Map<String, dynamic>> items = [];
   List<String> roots = [];
@@ -230,7 +289,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
 
   Future<void> _load(String? p) async {
     try {
-      final r = await hub.api!.get('/api/fs', query: {'path': ?p}) as Map;
+      final r = await node.api!.get('/api/fs', query: {'path': ?p}) as Map;
       setState(() {
         path = r['path'] as String;
         roots = (r['roots'] as List).cast<String>();
@@ -244,7 +303,11 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
   @override
   Widget build(BuildContext context) {
     final skin = settings.skin;
-    final parent = path == null || roots.contains(path) ? null : path!.substring(0, path!.lastIndexOf('/'));
+    final sep = node.sep;
+    final cut = path?.lastIndexOf(sep) ?? -1;
+    final parent = path == null || roots.contains(path) || cut <= 0
+        ? null
+        : path!.substring(0, sep == '\\' && cut == 2 ? 3 : cut); // keep "C:\\" a folder
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
@@ -255,10 +318,33 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Text(skin.head('New chat'), style: TextStyle(fontSize: 20, fontFamily: skin.headFont, color: skin.fg)),
             ),
+            if (hub.nodes.length > 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Wrap(spacing: 8, runSpacing: 6, children: [
+                  for (final n in hub.nodes)
+                    ChoiceChip(
+                      avatar: Icon(n.os == 'windows' ? Icons.laptop_windows : Icons.dns_outlined, size: 18),
+                      label: Text(n.name),
+                      selected: node == n,
+                      onSelected: n.link != LinkState.online
+                          ? null
+                          : (_) {
+                              setState(() {
+                                node = n;
+                                kind = n.launchers.first.kind;
+                                path = null;
+                                items = [];
+                              });
+                              _load(null);
+                            },
+                    ),
+                ]),
+              ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Wrap(spacing: 8, runSpacing: 6, children: [
-                for (final l in hub.launchers)
+                for (final l in node.launchers)
                   ChoiceChip(
                     avatar: Icon(launcherIcon(l.icon), size: 18),
                     label: Text(l.label),
@@ -290,7 +376,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                     dense: true,
                     leading: const Icon(Icons.folder_outlined),
                     title: Text(i['name'] as String),
-                    onTap: () => _load('$path/${i['name']}'),
+                    onTap: () => _load('${path!.endsWith(sep) ? path : '$path$sep'}${i['name']}'),
                   ),
               ]),
             ),
@@ -302,10 +388,10 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                     : () async {
                         setState(() => busy = true);
                         try {
-                          final id = await hub.newSession(kind, path!, nameCtrl.text.trim());
+                          final id = await node.newSession(kind, path!, nameCtrl.text.trim());
                           if (!context.mounted) return;
                           Navigator.pop(context);
-                          final s = hub.sessionById(id);
+                          final s = node.sessionById(id);
                           if (s != null) openTerminal(s);
                         } catch (e) {
                           toast('$e');
@@ -313,7 +399,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                         }
                       },
                 icon: const Icon(Icons.play_arrow),
-                label: Text('Start ${hub.launcher(kind).label} here'),
+                label: Text('Start ${node.launcher(kind).label}${hub.nodes.length > 1 ? ' on ${node.name}' : ''} here'),
               ),
             ),
           ]),

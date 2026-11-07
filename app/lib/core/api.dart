@@ -6,27 +6,38 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// One paired bridge: hosts to try in order (LAN first, then Tailscale), port, token, certificate pin.
+/// One paired machine (node): hosts to try in order (LAN first, then Tailscale), port, this device's token, cert pin.
+/// [id] is the node's id (proto 2); links from old bridges have none until /api/info tells us.
+/// [code] is the one-time pairing code of a v2 link: it is traded for [token] once and never saved.
 class Server {
   final String name;
   final List<String> hosts;
   final int port;
   final String token;
   final String pin; // sha256 of the bridge certificate (DER), hex
+  final String? id;
+  final String? code;
 
-  const Server({required this.name, required this.hosts, required this.port, required this.token, required this.pin});
+  const Server({required this.name, required this.hosts, required this.port, required this.token, required this.pin,
+      this.id, this.code});
 
-  Map<String, dynamic> toJson() => {'n': name, 'h': hosts, 'p': port, 't': token, 'c': pin};
+  Server copyWith({String? name, String? token, String? id}) => Server(
+      name: name ?? this.name, hosts: hosts, port: port, token: token ?? this.token, pin: pin, id: id ?? this.id);
+
+  Map<String, dynamic> toJson() => {'n': name, 'h': hosts, 'p': port, 't': token, 'c': pin, 'id': ?id};
 
   factory Server.fromJson(Map<String, dynamic> j) => Server(
         name: j['n'] as String? ?? 'bridge',
         hosts: (j['h'] as List).cast<String>(),
         port: (j['p'] as num).toInt(),
-        token: j['t'] as String,
+        token: j['t'] as String? ?? '',
         pin: (j['c'] as String).toLowerCase(),
+        id: j['id'] as String?,
+        code: j['k'] as String?,
       );
 
-  /// Parses the `switchboard://pair/<base64url json>` link (or just the payload).
+  /// Parses the `switchboard://pair/<base64url json>` link (or just the payload): v1 carries the shared token,
+  /// v2 a one-time code to trade for this device's own token.
   static Server? fromPairLink(String link) {
     var payload = link.trim();
     final i = payload.indexOf('pair/');
@@ -34,22 +45,34 @@ class Server {
     payload = payload.split('?').first;
     try {
       final norm = base64Url.normalize(payload);
-      return Server.fromJson(jsonDecode(utf8.decode(base64Url.decode(norm))) as Map<String, dynamic>);
+      final s = Server.fromJson(jsonDecode(utf8.decode(base64Url.decode(norm))) as Map<String, dynamic>);
+      return s.token.isEmpty && s.code == null ? null : s;
     } catch (_) {
       return null;
     }
   }
 
+  /// Same machine: same node id, or (old bridges without one) same addresses and certificate.
+  bool sameMachine(Server o) => id != null && o.id != null ? id == o.id : pin == o.pin && port == o.port;
+
   static const _storage = FlutterSecureStorage();
 
-  static Future<Server?> load() async {
-    final s = await _storage.read(key: 'server');
-    return s == null ? null : Server.fromJson(jsonDecode(s) as Map<String, dynamic>);
+  /// All paired machines. Moves an old single 'server' entry into the list on first run.
+  static Future<List<Server>> loadAll() async {
+    final raw = await _storage.read(key: 'servers');
+    if (raw != null) {
+      return (jsonDecode(raw) as List).map((j) => Server.fromJson(j as Map<String, dynamic>)).toList();
+    }
+    final old = await _storage.read(key: 'server');
+    if (old == null) return [];
+    final list = [Server.fromJson(jsonDecode(old) as Map<String, dynamic>)];
+    await saveAll(list);
+    await _storage.delete(key: 'server');
+    return list;
   }
 
-  Future<void> save() => _storage.write(key: 'server', value: jsonEncode(toJson()));
-
-  static Future<void> forget() => _storage.delete(key: 'server');
+  static Future<void> saveAll(List<Server> list) =>
+      _storage.write(key: 'servers', value: jsonEncode(list.map((s) => s.toJson()).toList()));
 }
 
 class ApiException implements Exception {
@@ -170,6 +193,12 @@ class Api {
     final text = await res.transform(utf8.decoder).join().timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) throw ApiException(res.statusCode, text);
     return (jsonDecode(text) as Map)['path'] as String;
+  }
+
+  /// Trades a v2 link's one-time code for this device's own token. Returns the server to save.
+  Future<Server> redeem(String deviceName) async {
+    final r = await post('/api/pair', {'code': server.code, 'device': deviceName}) as Map;
+    return server.copyWith(token: r['token'] as String, id: r['node_id'] as String?, name: r['name'] as String?);
   }
 
   String vigilUrl() => '$_base/vigil/?token=${Uri.encodeComponent(server.token)}';

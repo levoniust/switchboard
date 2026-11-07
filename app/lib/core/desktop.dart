@@ -48,7 +48,7 @@ class Desktop {
         id: a.id & 0x7fffffff,
         title: '$who: ${a.title}',
         body: a.body.isEmpty ? null : a.body,
-        payload: a.pane,
+        payload: '${a.node?.id ?? ''}|${a.pane ?? ''}',  // node|pane
       );
     } catch (_) {}
   }

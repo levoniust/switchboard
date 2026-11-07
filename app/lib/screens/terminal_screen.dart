@@ -46,7 +46,8 @@ const _commands = <(String, String, bool)>[
 /// Terminal = the raw screen at the PC's size, zoomed to fit, typed into directly.
 class TerminalScreen extends StatefulWidget {
   final String sessionId;
-  const TerminalScreen({super.key, required this.sessionId});
+  final String? nodeId; // the machine (null = the first one)
+  const TerminalScreen({super.key, required this.sessionId, this.nodeId});
   @override
   State<TerminalScreen> createState() => _TerminalScreenState();
 }
@@ -77,7 +78,8 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
   int _cols = 80, _rows = 30;
   double _zoom = 1;
 
-  Session? get session => hub.sessionById(widget.sessionId);
+  Session? get session => hub.sessionById(widget.sessionId, widget.nodeId);
+  NodeLink? get node => hub.node(widget.nodeId);
 
   @override
   void initState() {
@@ -85,7 +87,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     terminal.onOutput = (data) => _send(data);
     _pane = session?.pane;
-    hub.setFocus(_pane);
+    hub.setFocus(session);
     composer.addListener(_composerChanged);
     if (isDesktop) composerFocus.onKeyEvent = _composerKey;
     _connect();
@@ -123,11 +125,11 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
   }
 
   Future<void> _connect() async {
-    if (_connecting || _closed || hub.api == null) return;
+    if (_connecting || _closed || node?.api == null) return;
     _connecting = true;
     final reader = _reader;
     try {
-      final ws = await hub.api!.socket(
+      final ws = await node!.api!.socket(
         '/api/sessions/${Uri.encodeComponent(widget.sessionId)}/term',
         query: {'mode': reader ? 'reader' : 'fixed', 'cols': '$_cols', 'rows': '$_rows', if (reader) 'proto': '2'},
       );
@@ -339,7 +341,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
     if (x == null) return;
     try {
       toast('Uploading…');
-      final path = await hub.api!.upload(x.name, await x.readAsBytes());
+      final path = await node!.api!.upload(x.name, await x.readAsBytes());
       setState(() => _showComposer = true);
       composer.text = '${composer.text}${composer.text.isEmpty || composer.text.endsWith(' ') ? '' : ' '}$path ';
       composerFocus.requestFocus();
@@ -377,7 +379,7 @@ class _TerminalScreenState extends State<TerminalScreen> with WidgetsBindingObse
         final s = session;
         if (s != null && s.pane != _pane) {
           _pane = s.pane;
-          hub.setFocus(_pane);
+          hub.setFocus(s);
         }
         final online = _ws != null;
         return Scaffold(

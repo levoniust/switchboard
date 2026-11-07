@@ -18,15 +18,14 @@ import 'screens/vigil_screen.dart';
 import 'skins/chrome.dart';
 
 final settings = Settings();
-final hub = Hub();
+final hub = Fleet();
 final navKey = GlobalKey<NavigatorState>();
 final messengerKey = GlobalKey<ScaffoldMessengerState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await settings.load();
-  final server = await Server.load();
-  if (server != null) unawaited(hub.start(server));
+  unawaited(hub.start(await Server.loadAll()));
   if (isDesktop) unawaited(Desktop.instance.init());
   runApp(const SwitchboardApp());
 }
@@ -57,8 +56,9 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
       // A computer keeps the socket open in the background: unfocused or minimized only changes what the bridge
       // is told (so the phone still gets pushes) and turns alerts into Windows toasts.
       _life = AppLifecycleListener(onStateChange: (s) => hub.setWindowActive(s == AppLifecycleState.resumed));
-      _toastSub = Desktop.instance.clicks.listen((pane) {
-        final sess = hub.sessionByPane(pane);
+      _toastSub = Desktop.instance.clicks.listen((payload) {
+        final p = (payload ?? '').split('|'); // "node|pane"
+        final sess = p.length == 2 ? hub.sessionByPane(p[1], p[0]) : hub.sessionByPane(payload);
         if (sess != null) openTerminal(sess);
       });
     } else {
@@ -75,6 +75,7 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
   }
 
   /// Deep links: `switchboard://pair/PAYLOAD`, `alert/ID`, `answer/ID/KEY`, `session/PANE`, `vigil`.
+  /// `?node=ID` picks the machine (pushes from 1.3 nodes); without it, the first machine (older pushes).
   Future<void> _onLink(Uri uri) async {
     final s = uri.toString();
     // the initial link can arrive twice; the same notification tapped again later must still work
@@ -83,6 +84,7 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
     _lastLink = s;
     _lastLinkAt = now;
     final parts = [uri.host, ...uri.pathSegments].where((p) => p.isNotEmpty).toList();
+    final nodeId = uri.queryParameters['node'];
     if (parts.isEmpty) return;
     switch (parts.first) {
       case 'pair':
@@ -91,23 +93,25 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
         navKey.currentState?.push(MaterialPageRoute(builder: (_) => PairScreen(initial: server)));
         break;
       case 'alert':
-        await _openAlert(int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0);
+        await _openAlert(int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0, nodeId);
         break;
       case 'answer':
         final id = parts.length < 3 ? null : int.tryParse(parts[1]);
         if (id == null) return toast('That link is damaged.');
-        await _waitOnline();
+        await _waitOnline(nodeId);
+        final node = hub.node(nodeId);
+        if (node == null) return toast('That machine is not paired with this app.');
         try {
-          final label = await hub.answer(id, parts[2]);
+          final label = await node.answer(id, parts[2]);
           toast('Answered: $label');
         } catch (e) {
           toast('Could not answer: $e');
         }
-        await _openAlert(id);
+        await _openAlert(id, nodeId);
         break;
       case 'session':
-        await _waitOnline();
-        final sess = hub.sessionById(Uri.decodeComponent(parts.length > 1 ? parts[1] : ''));
+        await _waitOnline(nodeId);
+        final sess = hub.sessionById(Uri.decodeComponent(parts.length > 1 ? parts[1] : ''), nodeId);
         if (sess != null) openTerminal(sess);
         break;
       case 'vigil':
@@ -116,17 +120,19 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
     }
   }
 
-  Future<void> _waitOnline() async {
-    for (var i = 0; i < 40 && hub.link != LinkState.online; i++) {
+  Future<void> _waitOnline([String? nodeId]) async {
+    for (var i = 0; i < 40 && (hub.node(nodeId)?.link ?? hub.link) != LinkState.online; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
   }
 
-  Future<void> _openAlert(int id) async {
-    await _waitOnline();
+  Future<void> _openAlert(int id, [String? nodeId]) async {
+    await _waitOnline(nodeId);
+    final node = hub.node(nodeId);
+    if (node == null) return toast('That machine is not paired with this app.');
     try {
-      final a = await hub.alert(id);
-      final sess = hub.sessionByPane(a.pane);
+      final a = await node.alert(id);
+      final sess = node.sessionByPane(a.pane);
       if (sess != null) {
         openTerminal(sess);
       } else {
@@ -154,7 +160,7 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
           navigatorKey: navKey,
           scaffoldMessengerKey: messengerKey,
           theme: skin.theme,
-          home: hub.server == null ? const PairScreen() : const HomeScreen(),
+          home: hub.paired ? const HomeScreen() : const PairScreen(),
         );
       },
     );
@@ -163,7 +169,7 @@ class _SwitchboardAppState extends State<SwitchboardApp> {
 
 void openTerminal(Session s) {
   navKey.currentState?.popUntil((r) => r.isFirst);
-  navKey.currentState?.push(MaterialPageRoute(builder: (_) => TerminalScreen(sessionId: s.id)));
+  navKey.currentState?.push(MaterialPageRoute(builder: (_) => TerminalScreen(sessionId: s.id, nodeId: s.node?.id)));
 }
 
 class HomeScreen extends StatefulWidget {
@@ -189,7 +195,7 @@ class _HomeScreenState extends State<HomeScreen> {
         duration: Duration(seconds: a.needsAnswer ? 10 : 4),
         content: Text('$who: ${a.title}${a.body.isNotEmpty ? ' — ${a.body}' : ''}', maxLines: 3, overflow: TextOverflow.ellipsis),
         action: SnackBarAction(label: 'OPEN', onPressed: () {
-          final s = hub.sessionByPane(a.pane);
+          final s = hub.sessionFor(a);
           if (s != null) openTerminal(s);
         }),
       ));
