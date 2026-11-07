@@ -297,6 +297,17 @@ async def test_end_to_end(bridge_env):
             assert r.status == 401
             r = await c.get(base + "/api/sessions", params={"token": "tök"}, ssl=ctx)
             assert r.status == 401  # non-ASCII token: rejected, not a 500
+            # per-device pairing: wrong code refused, right code gives a working token, revoke kills it
+            r = await c.post(base + "/api/pair", json={"code": "bad", "device": "x"}, ssl=ctx)
+            assert r.status == 403
+            code = sbcore.Devices(home).new_code()
+            pr = await (await c.post(base + "/api/pair", json={"code": code, "device": "phone"}, ssl=ctx)).json()
+            DH = {"Authorization": "Bearer " + pr["token"]}
+            assert (await c.get(base + "/api/sessions", headers=DH, ssl=ctx)).status == 200
+            devs = await (await c.get(base + "/api/devices", headers=DH, ssl=ctx)).json()
+            assert devs["you"] == pr["device_id"] and devs["legacy_token"] is True
+            assert (await c.delete(base + f"/api/devices/{pr['device_id']}", headers=H, ssl=ctx)).status == 200
+            assert (await c.get(base + "/api/sessions", headers=DH, ssl=ctx)).status == 401
             info = await (await c.get(base + "/api/info", headers=H, ssl=ctx)).json()
             assert info["proto"] == 2 and info["os"] == "linux" and len(info["node_id"]) == 16
             assert "reader2" in info["features"]
@@ -470,6 +481,49 @@ def test_detect_kind_match(monkeypatch, tmp_path):
     assert sbcore.detect_kind(1, cfg) == "claude-local"
     files["/proc/7/environ"] = b"PATH=/bin\0"
     assert sbcore.detect_kind(1, cfg) == "claude"
+
+
+# ---------------------------------------------------------------- devices + pairing (proto 2)
+
+def test_devices_pair_check_revoke(tmp_path):
+    d = sbcore.Devices(str(tmp_path))
+    code = d.new_code()
+    assert d.redeem("wrong", "x") is None
+    dev, tok = d.redeem(code, "Tim's phone")
+    assert d.redeem(code, "again") is None  # one-time
+    assert d.check(tok) == dev and d.check("nope") is None and d.check("") is None
+    assert tok not in (tmp_path / "devices.json").read_text()  # only the hash is stored
+    assert [x["name"] for x in d.list()] == ["Tim's phone"]
+    assert d.revoke(dev) and d.check(tok) is None and not d.revoke(dev)
+
+
+def test_pair_code_expires(tmp_path, monkeypatch):
+    d = sbcore.Devices(str(tmp_path))
+    code = d.new_code()
+    real = time.time
+    monkeypatch.setattr(sbcore.time, "time", lambda: real() + d.CODE_TTL + 1)
+    assert d.redeem(code, "late") is None
+
+
+def test_push_links_carry_node(monkeypatch, tmp_path):
+    sent = {}
+
+    class R:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    def fake(req, timeout):
+        sent.update(json.loads(req.data))
+        return R()
+    monkeypatch.setattr(sbcore.urllib.request, "urlopen", fake)
+    tok = tmp_path / "t"; tok.write_text("x")
+    cfg = {"enabled": True, "ha_url": "http://ha:8123", "ha_notify": "m", "ha_token_file": str(tok)}
+    sbcore.ha_push(cfg, {"id": 7, "type": "question", "title": "Q", "pane": "%1",
+                         "options": [{"key": "1", "label": "A"}]}, node="abc123")
+    d = sent["data"]
+    assert "alert/7?node=abc123#Intent" in d["clickAction"] and d["url"].endswith("alert/7?node=abc123")
+    assert "answer/7/1?node=abc123#Intent" in d["actions"][0]["uri"] and d["tag"] == "sb-abc123-%1"
 
 
 # ---------------------------------------------------------------- node identity (proto 2)

@@ -9,7 +9,8 @@
 usage:
   switchboard.py init [--hosts 192.168.1.10,100.x.y.z] [--ha-url URL --ha-notify mobile_app_x]   create config, token, TLS cert
   switchboard.py serve                                                                           run the bridge (systemd --user)
-  switchboard.py pair                                                                            show the pairing link / QR
+  switchboard.py pair [--legacy]                                                                 one-time pairing link / QR for a new device
+  switchboard.py devices [list|revoke ID|legacy on|off]                                          paired devices, shared-token switch
   switchboard.py download-link                                                                   one-time APK + pairing page link
   switchboard.py push [on|off|test]                                                              phone notifications via Home Assistant
 """
@@ -89,20 +90,51 @@ def cert_pin(cert_path):
     return hashlib.sha256(der).hexdigest()
 
 
-def pair_payload(cfg):
+def pair_payload(cfg, code=None):
+    """v2 (default): one-time pairing code, no long-lived secret. v1 (code=None): the shared token, for old apps."""
     d = sbcore.config_dir()
-    p = {"v": 1, "n": cfg["name"], "h": cfg["hosts"], "p": cfg["port"], "t": cfg["token"],
-         "c": cert_pin(os.path.join(d, "cert.pem"))}
+    pin = cert_pin(os.path.join(d, "cert.pem"))
+    if code is None:
+        p = {"v": 1, "n": cfg["name"], "h": cfg["hosts"], "p": cfg["port"], "t": cfg["token"], "c": pin}
+    else:
+        p = {"v": 2, "id": sbcore.ensure_node_id(cfg), "n": cfg["name"], "h": cfg["hosts"], "p": cfg["port"],
+             "c": pin, "k": code}
     return base64.urlsafe_b64encode(json.dumps(p, separators=(",", ":")).encode()).decode().rstrip("=")
 
 
 def cmd_pair(a):
     import segno
     cfg = sbcore.load_config()
-    link = "switchboard://pair/" + pair_payload(cfg)
-    print("Pairing link (contains the access token - treat it like a password):\n")
+    if a.legacy:
+        link = "switchboard://pair/" + pair_payload(cfg)
+        print("Legacy pairing link for apps older than 1.3 (contains the shared token - treat it like a password):\n")
+    else:
+        code = sbcore.Devices(sbcore.config_dir()).new_code()
+        link = "switchboard://pair/" + pair_payload(cfg, code)
+        print(f"Scan with Switchboard (Settings > Machines > Add), or open the link on the device.\n"
+              f"One-time code, valid {sbcore.Devices.CODE_TTL // 60} minutes:\n")
     print(link + "\n")
     segno.make(link, error="l").terminal(compact=True)
+
+
+def cmd_devices(a):
+    cfg = sbcore.load_config()
+    devs = sbcore.Devices(sbcore.config_dir())
+    if a.action == "revoke":
+        sys.exit(f"revoked {a.arg}" if devs.revoke(a.arg or "") else f"no device {a.arg}")
+    if a.action == "legacy":
+        if a.arg not in ("on", "off"):
+            sys.exit(f"shared token is {'ON' if cfg.get('legacy_token', True) else 'OFF'}  (devices legacy on|off)")
+        path = os.path.join(sbcore.config_dir(), "config.json")
+        disk = json.load(open(path))
+        disk["legacy_token"] = a.arg == "on"
+        sbcore.write_private_json(path, disk)
+        print(f"shared token {'ON' if disk['legacy_token'] else 'OFF'} (restart the node to apply)")
+        return
+    for d in devs.list():
+        seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"])) if d.get("last_seen") else "never"
+        print(f"{d['id']}  {d['name']:<24} last seen {seen}")
+    print(f"shared token (apps older than 1.3): {'ON' if cfg.get('legacy_token', True) else 'OFF'}")
 
 
 def cmd_push(a):
@@ -165,6 +197,9 @@ class Bridge:
         self.clients = set()          # event websockets
         self.focus = {}               # ws -> pane the app is looking at (foreground)
         self.answering = set()        # alert ids being answered right now
+        self.devices = sbcore.Devices(self.dir)
+        self.pair_fails = []          # times of wrong pairing codes (rate limit)
+        self.sockets = {}             # every open websocket -> device id (closed when that device is revoked)
         self.loop = None
         self.http = None
         # a restart must not forget prompts that are still waiting for an answer
@@ -174,15 +209,26 @@ class Bridge:
 
     # ---- helpers
     def features(self):
-        f = ["reader2", "fs", "upload"]
+        f = ["reader2", "fs", "upload", "pair2", "devices"]
         if self.cfg.get("vigil_url"):
             f.append("vigil")
         return f
 
-    def auth_ok(self, request):
+    @staticmethod
+    def request_token(request):
         tok = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        tok = tok or request.query.get("token", "") or request.cookies.get("sb", "")
-        return secrets.compare_digest(tok.encode(), self.cfg["token"].encode())
+        return tok or request.query.get("token", "") or request.cookies.get("sb", "")
+
+    def auth_ok(self, request):
+        """Device id ("legacy" for the shared token) of the caller, or None."""
+        tok = self.request_token(request)
+        try:
+            tok.encode("ascii")
+        except UnicodeEncodeError:
+            return None
+        if self.cfg.get("legacy_token", True) and secrets.compare_digest(tok.encode(), self.cfg["token"].encode()):
+            return "legacy"
+        return self.devices.check(tok)
 
     def window_for(self, wid):
         for w in self.tmux.windows():
@@ -238,7 +284,7 @@ class Bridge:
 
     def _push(self, alert):
         try:
-            sbcore.ha_push(self.cfg.get("push", {}), alert)
+            sbcore.ha_push(self.cfg.get("push", {}), alert, node=self.cfg.get("node_id"))
         except Exception as e:  # never let push problems break the bridge
             log.warning("push failed: %s", e)
 
@@ -259,6 +305,41 @@ class Bridge:
             meta.update(window=w["id"], title=w["name"], kind=hint or sbcore.detect_kind(w["pid"], self.cfg))
         alert = self.sessions.hook(ev, meta)
         return web.json_response({"ok": True, "alert": alert["id"] if alert else None})
+
+    # ---- pairing + devices
+    async def pair(self, request):
+        """POST {"code", "device"} -> a new device token. No auth: the one-time code is the proof."""
+        now = time.time()
+        self.pair_fails = [t for t in self.pair_fails if now - t < 600]
+        if len(self.pair_fails) >= 5:
+            raise web.HTTPTooManyRequests(text="too many wrong codes, try again in 10 minutes")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise web.HTTPBadRequest(text="bad request")
+        got = await asyncio.to_thread(self.devices.redeem, str(body.get("code", "")), str(body.get("device", "")))
+        if not got:
+            self.pair_fails.append(now)
+            await asyncio.sleep(2)
+            raise web.HTTPForbidden(text="that pairing code is wrong or expired: run `switchboard pair` again")
+        dev_id, token = got
+        log.info("paired device %s (%s) from %s", dev_id, str(body.get("device", ""))[:40], request.remote)
+        return web.json_response({"device_id": dev_id, "token": token, "node_id": self.cfg.get("node_id"),
+                                  "name": self.cfg["name"]})
+
+    async def list_devices(self, request):
+        return web.json_response({"you": request["device"], "devices": self.devices.list(),
+                                  "legacy_token": self.cfg.get("legacy_token", True)})
+
+    async def revoke_device(self, request):
+        dev = request.match_info["dev"]
+        ok = await asyncio.to_thread(self.devices.revoke, dev)
+        if not ok:
+            raise web.HTTPNotFound(text="no such device")
+        for ws, d in list(self.sockets.items()):
+            if d == dev and ws is not request.get("ws"):
+                await ws.close()
+        return web.json_response({"ok": True})
 
     # ---- REST
     async def info(self, request):
@@ -411,6 +492,7 @@ class Bridge:
         ws = web.WebSocketResponse(heartbeat=25)
         await ws.prepare(request)
         self.clients.add(ws)
+        self.sockets[ws] = request["device"]
         try:
             await ws.send_str(json.dumps({"type": "hello", "version": VERSION}))
             async for msg in ws:
@@ -421,6 +503,7 @@ class Bridge:
         finally:
             self.clients.discard(ws)
             self.focus.pop(ws, None)
+            self.sockets.pop(ws, None)
         return ws
 
     async def terminal(self, request):
@@ -438,6 +521,7 @@ class Bridge:
         cols, rows = _int(request.query.get("cols"), 80, 10, 1000), _int(request.query.get("rows"), 30, 5, 500)
         ws = web.WebSocketResponse(heartbeat=15, max_msg_size=4 * 1024 * 1024)
         await ws.prepare(request)
+        self.sockets[ws] = request["device"]
         peer = request.remote
         info = await asyncio.to_thread(self.tmux.pane_info, w["pane"]) if mode != "live" else None
         if info:
@@ -591,6 +675,7 @@ class Bridge:
                         set_size(*m["resize"])
         finally:
             log.info("phone detached %s from %s", mode, w["name"])
+            self.sockets.pop(ws, None)
             loop.remove_reader(mfd)
             pump_task.cancel()
             if side_task:
@@ -627,7 +712,7 @@ class Bridge:
                            .replace(b"fetch('/", b"fetch('/vigil/").replace(b'fetch("/', b'fetch("/vigil/')
             resp = web.Response(body=data, status=r.status, headers=out)
         if request.query.get("token") and self.auth_ok(request):
-            resp.set_cookie("sb", self.cfg["token"], httponly=True, secure=True, samesite="Strict", max_age=86400 * 365)
+            resp.set_cookie("sb", request.query["token"], httponly=True, secure=True, samesite="Strict", max_age=86400 * 365)
         return resp
 
     # ---- APK download + pairing page (one-time code)
@@ -649,13 +734,13 @@ class Bridge:
             raise web.HTTPGone(text="This link was already used. Run `switchboard download-link` for a new one.")
         codes[code] = {**entry, "page_seen": True}
         save_codes(codes_path, codes)
-        link = "switchboard://pair/" + pair_payload(self.cfg)
+        link = "switchboard://pair/" + pair_payload(self.cfg, await asyncio.to_thread(self.devices.new_code))
         html = f"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Switchboard</title><body style="font-family:monospace;background:#0b0f0c;color:#b8f5c0;padding:16px;line-height:1.5">
 <h2>&gt; switchboard_</h2><p>1. <a style="color:#7CFF8A" href="/get/{code}/apk">Download the app (APK)</a> and install it
 (allow installs from your browser when Android asks).</p>
 <p>2. <a style="color:#7CFF8A" href="{link}">Pair this phone with {self.cfg['name']}</a> (opens the app).</p>
-<p style="color:#6a8">This page is a one-time link. Don't share it: step 2 contains the access key.</p></body>"""
+<p style="color:#6a8">This page is a one-time link. Don't share it: step 2 pairs a device (valid 10 minutes).</p></body>"""
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
@@ -677,10 +762,12 @@ def _winsize(fd, cols, rows):
 async def auth_mw(request, handler):
     bridge = request.app["bridge"]
     path = request.path
-    if path.startswith("/get/") or path == "/health":
+    if path.startswith("/get/") or path in ("/health", "/api/pair"):
         return await handler(request)
-    if not bridge.auth_ok(request):
+    dev = bridge.auth_ok(request)
+    if not dev:
         raise web.HTTPUnauthorized(text="pair the app first")
+    request["device"] = dev
     return await handler(request)
 
 
@@ -694,6 +781,9 @@ def make_app(bridge):
     b = bridge
     app.router.add_get("/health", health)
     app.router.add_get("/api/info", b.info)
+    app.router.add_post("/api/pair", b.pair)
+    app.router.add_get("/api/devices", b.list_devices)
+    app.router.add_delete("/api/devices/{dev}", b.revoke_device)
     app.router.add_get("/api/sessions", b.list_sessions)
     app.router.add_post("/api/sessions", b.create_session)
     app.router.add_post("/api/sessions/{sid}/rename", b.rename_session)
@@ -755,7 +845,10 @@ def main():
     i.add_argument("--hosts"); i.add_argument("--port", type=int); i.add_argument("--tmux-session")
     i.add_argument("--ha-url"); i.add_argument("--ha-notify"); i.add_argument("--ha-token-file")
     i.add_argument("--vigil-url"); i.add_argument("--new-cert", action="store_true")
-    sub.add_parser("serve"); sub.add_parser("pair"); sub.add_parser("download-link")
+    sub.add_parser("serve"); sub.add_parser("download-link")
+    pa = sub.add_parser("pair"); pa.add_argument("--legacy", action="store_true")
+    dv = sub.add_parser("devices"); dv.add_argument("action", nargs="?", choices=["list", "revoke", "legacy"], default="list")
+    dv.add_argument("arg", nargs="?")
     pu = sub.add_parser("push"); pu.add_argument("state", nargs="?", choices=["on", "off", "test", "status"], default="status")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -765,6 +858,8 @@ def main():
         asyncio.run(serve(sbcore.load_config()))
     elif a.cmd == "pair":
         cmd_pair(a)
+    elif a.cmd == "devices":
+        cmd_devices(a)
     elif a.cmd == "download-link":
         cmd_download_link(a)
     elif a.cmd == "push":

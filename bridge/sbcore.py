@@ -2,6 +2,7 @@
 
 Kept free of aiohttp so it can be unit-tested on its own.
 """
+import hashlib
 import json
 import os
 import platform
@@ -140,6 +141,86 @@ def load_config():
 
 def new_token():
     return secrets.token_urlsafe(32)
+
+
+# ---------------------------------------------------------------- devices + pairing (proto 2)
+
+def _hash(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+class Devices:
+    """Paired devices (phones, desktop apps), each with its own token. Only sha256(token) is stored, in devices.json.
+    One-time pairing codes live in pair-codes.json, because `switchboard pair` runs as a separate process."""
+
+    CODE_TTL = 600
+
+    def __init__(self, home):
+        self.path = os.path.join(home, "devices.json")
+        self.codes_path = os.path.join(home, "pair-codes.json")
+        self.lock = threading.Lock()
+
+    def _load(self, path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def all(self):
+        return self._load(self.path)
+
+    def list(self):
+        return [{"id": k, "name": v.get("name", ""), "created": v.get("created"), "last_seen": v.get("last_seen")}
+                for k, v in self.all().items()]
+
+    def new_code(self):
+        code = secrets.token_urlsafe(12)
+        with self.lock:
+            codes = {k: v for k, v in self._load(self.codes_path).items() if v > time.time()}
+            codes[_hash(code)] = time.time() + self.CODE_TTL
+            write_private_json(self.codes_path, codes)
+        return code
+
+    def redeem(self, code, name):
+        """Turns a valid one-time code into a new device. Returns (device_id, token) or None."""
+        with self.lock:
+            codes = self._load(self.codes_path)
+            exp = codes.pop(_hash(code or ""), None)
+            write_private_json(self.codes_path, {k: v for k, v in codes.items() if v > time.time()})
+            if not exp or exp < time.time():
+                return None
+            devs = self.all()
+            dev_id, token = secrets.token_hex(6), new_token()
+            devs[dev_id] = {"name": (name or "device")[:40], "hash": _hash(token), "created": time.time(),
+                            "last_seen": time.time()}
+            write_private_json(self.path, devs)
+        return dev_id, token
+
+    def check(self, token):
+        """Device id for a token, or None. Constant-time compare against every stored hash."""
+        if not token:
+            return None
+        h, found = _hash(token).encode(), None
+        devs = self.all()
+        for dev_id, d in devs.items():
+            if secrets.compare_digest(h, d.get("hash", "").encode()):
+                found = dev_id
+        if found and time.time() - (devs[found].get("last_seen") or 0) > 60:
+            with self.lock:
+                devs = self.all()
+                if found in devs:
+                    devs[found]["last_seen"] = time.time()
+                    write_private_json(self.path, devs)
+        return found
+
+    def revoke(self, dev_id):
+        with self.lock:
+            devs = self.all()
+            if devs.pop(dev_id, None) is None:
+                return False
+            write_private_json(self.path, devs)
+        return True
 
 
 # ---------------------------------------------------------------- tmux
@@ -518,13 +599,15 @@ class Sessions:
 APP_PACKAGE = "dev.levoniust.switchboard"
 
 
-def app_link(path):
+def app_link(path, node=None):
     """Tap link for HA companion notifications. The Android HA app doesn't hand custom schemes to other apps: a bare
     switchboard://x is loaded as a page inside HA (404). An intent: URI is passed to Android, which opens Switchboard."""
+    if node:
+        path += f"?node={node}"
     return f"intent://{path}#Intent;scheme=switchboard;package={APP_PACKAGE};end"
 
 
-def ha_push(cfg_push, alert, link=app_link):
+def ha_push(cfg_push, alert, link=app_link, node=None):
     """Send an alert to the phone through HA's mobile_app notify service. Tapping opens the app at the alert."""
     url, service = cfg_push.get("ha_url"), cfg_push.get("ha_notify")
     if not (cfg_push.get("enabled") and url and service):
@@ -532,7 +615,8 @@ def ha_push(cfg_push, alert, link=app_link):
     token = open(os.path.expanduser(cfg_push.get("ha_token_file", "~/.ha_token"))).read().strip()
     icon = {"permission": "🔐", "question": "❓", "done": "✅", "error": "⚠️"}.get(alert["type"], "🔔")
     who = alert.get("session_name") or alert.get("window") or "Claude"
-    data = {"clickAction": link(f"alert/{alert['id']}"), "url": f"switchboard://alert/{alert['id']}", "tag": f"sb-{alert.get('pane')}", "group": "switchboard",
+    q = f"?node={node}" if node else ""
+    data = {"clickAction": link(f"alert/{alert['id']}", node), "url": f"switchboard://alert/{alert['id']}{q}", "tag": f"sb-{node + '-' if node else ''}{alert.get('pane')}", "group": "switchboard",
             "channel": "Switchboard " + ("Done" if alert["type"] == "done" else "Needs you"),
             "importance": "high", "priority": "high", "ttl": 0, "notification_icon": "mdi:console"}
     opts = alert.get("options") or []
@@ -540,7 +624,7 @@ def ha_push(cfg_push, alert, link=app_link):
         opts = [{"key": "1", "label": "Yes"}, {"key": "no", "label": "No"}]
     if opts:
         data["actions"] = [{"action": "URI", "title": o["label"][:20],
-                            "uri": link(f"answer/{alert['id']}/{o['key']}")} for o in opts[:3]]
+                            "uri": link(f"answer/{alert['id']}/{o['key']}", node)} for o in opts[:3]]
     body = {"title": f"{icon} {who}: {alert['title']}", "message": alert.get("body") or alert["title"], "data": data}
     req = urllib.request.Request(f"{url.rstrip('/')}/api/services/notify/{service}", json.dumps(body).encode(),
                                  {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
