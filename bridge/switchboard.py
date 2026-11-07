@@ -191,7 +191,7 @@ class Bridge:
     def __init__(self, cfg):
         self.cfg = cfg
         self.dir = sbcore.config_dir()
-        self.tmux = sbcore.Tmux(cfg["tmux_session"])
+        self.term = make_backend(cfg)
         self.store = sbcore.Store(os.path.join(self.dir, "alerts.db"))
         self.sessions = sbcore.Sessions(self.store, on_alert=self._on_alert, on_change=self._on_change)
         self.clients = set()          # event websockets
@@ -231,14 +231,14 @@ class Bridge:
         return self.devices.check(tok)
 
     def window_for(self, wid):
-        for w in self.tmux.windows():
+        for w in self.term.windows():
             if wid in (w["id"], w["pane"], str(w["index"])):
                 return w
         raise web.HTTPNotFound(text="no such session")
 
     def session_view(self, w):
         st = self.sessions.get(w["pane"])
-        kind = st.get("kind") or sbcore.detect_kind(w["pid"], self.cfg)
+        kind = st.get("kind") or self.term.detect_kind(w["pid"], self.cfg)
         st["kind"] = kind
         pending = self.store.get(st["pending"]) if st.get("pending") else None
         return {"id": w["id"], "index": w["index"], "name": w["name"], "pane": w["pane"], "cwd": w["cwd"],
@@ -260,7 +260,7 @@ class Bridge:
                 last = None
                 continue
             try:
-                now = [(w["id"], w["name"]) for w in await asyncio.to_thread(self.tmux.windows)]
+                now = [(w["id"], w["name"]) for w in await asyncio.to_thread(self.term.windows)]
             except Exception as e:  # tmux briefly unavailable: try again next round
                 log.debug("watch_windows: %s", e)
                 continue
@@ -299,10 +299,10 @@ class Bridge:
         if pane:
             # a pane counts if it is one of the chat windows (asking tmux for the pane's session is wrong:
             # while the phone looks at a chat, tmux names the phone's grouped view session instead)
-            w = next((w for w in await asyncio.to_thread(self.tmux.windows) if w["pane"] == pane), None)
+            w = next((w for w in await asyncio.to_thread(self.term.windows) if w["pane"] == pane), None)
             if not w:
                 return web.json_response({"ok": True, "ignored": "not a Switchboard tmux pane"})
-            meta.update(window=w["id"], title=w["name"], kind=hint or sbcore.detect_kind(w["pid"], self.cfg))
+            meta.update(window=w["id"], title=w["name"], kind=hint or self.term.detect_kind(w["pid"], self.cfg))
         alert = self.sessions.hook(ev, meta)
         return web.json_response({"ok": True, "alert": alert["id"] if alert else None})
 
@@ -350,7 +350,7 @@ class Bridge:
                                   "roots": self.cfg["roots"], "vigil": bool(self.cfg.get("vigil_url"))})
 
     async def list_sessions(self, request):
-        wins = await asyncio.to_thread(self.tmux.windows)
+        wins = await asyncio.to_thread(self.term.windows)
         return web.json_response([self.session_view(w) for w in wins])
 
     async def create_session(self, request):
@@ -361,8 +361,8 @@ class Bridge:
             raise web.HTTPBadRequest(text="unknown kind")
         cwd = self._safe_path(body.get("cwd") or self.cfg["roots"][0])
         name = (body.get("name") or launcher["name"])[:40]
-        await asyncio.to_thread(self.tmux.ensure_session)
-        wid, pane = await asyncio.to_thread(self.tmux.new_window, name, cwd, sbcore.command_for(kind, self.cfg))
+        await asyncio.to_thread(self.term.ensure_session)
+        wid, pane = await asyncio.to_thread(self.term.new_window, name, cwd, self.term.command_for(kind, self.cfg))
         self.sessions.get(pane)["kind"] = kind
         self.broadcast({"type": "sessions"})
         return web.json_response({"id": wid, "pane": pane})
@@ -370,13 +370,13 @@ class Bridge:
     async def rename_session(self, request):
         w = self.window_for(request.match_info["sid"])
         name = (await request.json()).get("name", "")[:40]
-        await asyncio.to_thread(self.tmux.rename, w["id"], name)
+        await asyncio.to_thread(self.term.rename, w["id"], name)
         self.broadcast({"type": "sessions"})
         return web.json_response({"ok": True})
 
     async def kill_session(self, request):
         w = self.window_for(request.match_info["sid"])
-        await asyncio.to_thread(self.tmux.kill, w["id"])
+        await asyncio.to_thread(self.term.kill, w["id"])
         self.store.close_pane(w["pane"])
         self.broadcast({"type": "sessions"})
         return web.json_response({"ok": True})
@@ -385,12 +385,12 @@ class Bridge:
         w = self.window_for(request.match_info["sid"])
         body = await request.json()
         keys = [k for k in body.get("keys", []) if isinstance(k, str) and len(k) < 20]
-        await asyncio.to_thread(self.tmux.send_keys, w["pane"], keys, body.get("text"))
+        await asyncio.to_thread(self.term.send_keys, w["pane"], keys, body.get("text"))
         return web.json_response({"ok": True})
 
     async def screen(self, request):
         w = self.window_for(request.match_info["sid"])
-        text = await asyncio.to_thread(self.tmux.capture, w["pane"], _int(request.query.get("lines"), 60, 1, 10000))
+        text = await asyncio.to_thread(self.term.capture, w["pane"], _int(request.query.get("lines"), 60, 1, 10000))
         return web.json_response({"text": text, "options": sbcore.parse_options(text)})
 
     async def list_alerts(self, request):
@@ -406,7 +406,7 @@ class Bridge:
             # the hook fires just before Claude Code draws the dialog: give the screen a moment to settle
             opts = []
             for _ in range(6):
-                text = await asyncio.to_thread(self.tmux.capture, a["pane"])
+                text = await asyncio.to_thread(self.term.capture, a["pane"])
                 opts = sbcore.parse_options(text)
                 if len(opts) >= 2:
                     break
@@ -432,7 +432,7 @@ class Bridge:
 
     async def _answer(self, a, body):
         key = str(body.get("key", ""))
-        text = await asyncio.to_thread(self.tmux.capture, a["pane"])
+        text = await asyncio.to_thread(self.term.capture, a["pane"])
         opts = sbcore.parse_options(text)
         if not opts:
             return web.json_response({"ok": False, "error": "the dialog is not on screen any more"}, status=409)
@@ -440,7 +440,7 @@ class Bridge:
             key = next((d for d, l in opts if l.lower().startswith("no")), opts[-1][0])
         if key not in [d for d, _ in opts]:
             return web.json_response({"ok": False, "error": "that choice is not on screen"}, status=409)
-        await asyncio.to_thread(self.tmux.send_keys, a["pane"], [key])
+        await asyncio.to_thread(self.term.send_keys, a["pane"], [key])
         label = next((l for d, l in opts if d == key), key)
         self.sessions.answered(a["pane"], a["id"], label)
         self.broadcast({"type": "alert_closed", "id": a["id"], "answered": label})
@@ -452,7 +452,7 @@ class Bridge:
 
     def _safe_path(self, path):
         real = os.path.realpath(os.path.expanduser(path))
-        if not any(real == r or real.startswith(r.rstrip("/") + "/") for r in map(os.path.realpath, self.cfg["roots"])):
+        if not any(_inside(real, os.path.realpath(os.path.expanduser(r))) for r in self.cfg["roots"]):
             raise web.HTTPForbidden(text="outside the allowed folders")
         return real
 
@@ -507,7 +507,7 @@ class Bridge:
         return ws
 
     async def terminal(self, request):
-        """Attach the app to one chat through a grouped tmux session on a PTY.
+        """Attach the app to one chat (Linux: a grouped tmux session on a PTY; Windows: sbkeeper's stream).
         Binary frames from the app = key bytes; text frames = JSON control ({"resize": [cols, rows]}).
         ?mode=live   (old apps) the phone's size resizes the real window and raw terminal bytes stream back.
         ?mode=fixed  the phone never resizes the window (tmux ignore-size); raw bytes stream back at the
@@ -523,60 +523,23 @@ class Bridge:
         await ws.prepare(request)
         self.sockets[ws] = request["device"]
         peer = request.remote
-        info = await asyncio.to_thread(self.tmux.pane_info, w["pane"]) if mode != "live" else None
+        info = await asyncio.to_thread(self.term.pane_info, w["pane"]) if mode != "live" else None
         if info:
             cols, rows = info["w"], info["h"]
-        view = await asyncio.to_thread(self.tmux.view_session, w["id"])
-        mfd, sfd = os.openpty()
-        _winsize(sfd, cols, rows)
-        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", LANG=os.environ.get("LANG", "C.UTF-8"))
-        env.pop("TMUX", None)
-        attach = ["tmux", "attach-session", "-t", f"={view}"]
-        if mode != "live":
-            attach[2:2] = ["-f", "ignore-size"]
-        proc = subprocess.Popen(attach, stdin=sfd, stdout=sfd, stderr=sfd, env=env, start_new_session=True, close_fds=True)
-        os.close(sfd)
-        os.set_blocking(mfd, False)
+        att = await self.term.attach(w, mode, cols, rows)
         log.info("phone attached %s to %s (%s) from %s", mode, w["name"], w["pane"], peer)
-        loop = asyncio.get_running_loop()
-        out_q = asyncio.Queue()
-
-        def readable():
-            try:
-                data = os.read(mfd, 65536)
-            except (BlockingIOError, InterruptedError):
-                return
-            except OSError:
-                data = b""
-            out_q.put_nowait(data)
-
-        loop.add_reader(mfd, readable)
-
-        def set_size(c, r):
-            _winsize(mfd, int(c), int(r))
-            try:
-                os.killpg(proc.pid, signal.SIGWINCH)
-            except ProcessLookupError:  # the tmux client just exited (window closed)
-                pass
 
         async def pump():
             while True:
-                data = await out_q.get()
-                if not data:
+                data = await att.read()
+                if not data or ws.closed:
                     break
-                # coalesce bursts
-                while not out_q.empty() and len(data) < 256 * 1024:
-                    nxt = out_q.get_nowait()
-                    if not nxt:
-                        out_q.put_nowait(b"")
-                        break
-                    data += nxt
-                if ws.closed:
-                    break
-                if mode != "reader":  # the reader gets snapshots instead; its PTY output is only drained
+                if mode != "reader":  # the reader gets snapshots instead; its terminal output is only drained
                     await ws.send_bytes(data)
             if not ws.closed:
                 await ws.close()
+
+        set_size = att.resize
 
         async def follow_size():
             """fixed mode: keep the phone's PTY at the window's real size and tell the app about it."""
@@ -584,7 +547,7 @@ class Bridge:
             await ws.send_str(json.dumps({"size": list(size)}))
             while not ws.closed:
                 await asyncio.sleep(1)
-                i = await asyncio.to_thread(self.tmux.pane_info, w["pane"])
+                i = await asyncio.to_thread(self.term.pane_info, w["pane"])
                 if i and (i["w"], i["h"]) != size:
                     size = (i["w"], i["h"])
                     set_size(*size)
@@ -603,23 +566,23 @@ class Bridge:
             async def seed():
                 """(re)send the deep capture as the phone's starting point; window tracking starts fresh."""
                 nonlocal full, prev, prev_start
-                full = await asyncio.to_thread(self.tmux.snapshot, w["pane"], sbcore.DEEP_CAPTURE)
+                full = await asyncio.to_thread(self.term.snapshot, w["pane"], sbcore.DEEP_CAPTURE)
                 while len(full) > 20 and sum(map(len, full)) > 3_500_000:
                     full.pop(0)  # stay under the websocket's 4 MB message cap
-                ii = await asyncio.to_thread(self.tmux.pane_info, w["pane"])
-                prev = await asyncio.to_thread(self.tmux.snapshot, w["pane"], depth)
+                ii = await asyncio.to_thread(self.term.pane_info, w["pane"])
+                prev = await asyncio.to_thread(self.term.snapshot, w["pane"], depth)
                 prev_start = max(0, (ii or {}).get("hist", 0) - depth)
                 await ws.send_str(json.dumps({"full": True, "tail": full, "proto": 2,
                                               "w": (ii or {}).get("w", cols), "alt": (ii or {}).get("alt", False)}))
 
             while not ws.closed:
-                i = await asyncio.to_thread(self.tmux.pane_info, w["pane"])
+                i = await asyncio.to_thread(self.term.pane_info, w["pane"])
                 if i is None:
                     break
                 if (i["w"], i["h"]) != size:
                     size = (i["w"], i["h"])
                     set_size(*size)
-                lines = await asyncio.to_thread(self.tmux.snapshot, w["pane"], depth)
+                lines = await asyncio.to_thread(self.term.snapshot, w["pane"], depth)
                 start = max(0, i["hist"] - depth)
                 if proto2 and (full is None or start < prev_start):
                     await seed()  # first attach, or the history reset (/clear, pane restart)
@@ -649,44 +612,26 @@ class Bridge:
             if not ws.closed:
                 await ws.close()
 
-        async def write_all(data):
-            # the PTY takes only a few KB at a time: a big paste must wait for room instead of being cut off
-            view = memoryview(data)
-            while view:
-                try:
-                    view = view[os.write(mfd, view):]
-                except BlockingIOError:
-                    await asyncio.sleep(0.01)
-                except OSError:
-                    return
-
         pump_task = asyncio.ensure_future(pump())
         side = {"fixed": follow_size, "reader": reader}.get(mode)
         side_task = asyncio.ensure_future(side()) if side else None
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
-                    await write_all(msg.data)
+                    await att.write(msg.data)
                 elif msg.type == WSMsgType.TEXT:
                     m = json.loads(msg.data)
                     if "input" in m:
-                        await write_all(m["input"].encode())
+                        await att.write(m["input"].encode())
                     if "resize" in m and mode == "live":
                         set_size(*m["resize"])
         finally:
             log.info("phone detached %s from %s", mode, w["name"])
             self.sockets.pop(ws, None)
-            loop.remove_reader(mfd)
             pump_task.cancel()
             if side_task:
                 side_task.cancel()
-            try:
-                proc.terminate()
-                await asyncio.to_thread(proc.wait, 3)
-            except Exception:
-                proc.kill()
-            os.close(mfd)
-            await asyncio.to_thread(self.tmux.kill_session, view)
+            await att.close()
         return ws
 
     # ---- Vigil reverse proxy (so Vigil works away from home through the bridge)
@@ -742,6 +687,106 @@ class Bridge:
 <p>2. <a style="color:#7CFF8A" href="{link}">Pair this phone with {self.cfg['name']}</a> (opens the app).</p>
 <p style="color:#6a8">This page is a one-time link. Don't share it: step 2 pairs a device (valid 10 minutes).</p></body>"""
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------- terminal backends
+
+class TmuxBackend(sbcore.Tmux):
+    """Linux: chats are windows of one tmux session. The app attaches through a grouped view session on a PTY."""
+
+    def detect_kind(self, pid, cfg):
+        return sbcore.detect_kind(pid, cfg)
+
+    def command_for(self, kind, cfg):
+        return sbcore.command_for(kind, cfg)
+
+    async def attach(self, w, mode, cols, rows):
+        view = await asyncio.to_thread(self.view_session, w["id"])
+        return await asyncio.to_thread(PtyAttach, self, view, mode, cols, rows)
+
+
+class PtyAttach:
+    """`tmux attach` of a view session on a PTY. read() gives terminal output (b"" at the end), write() sends keys."""
+
+    def __init__(self, tmux, view, mode, cols, rows):
+        self.tmux, self.view = tmux, view
+        self.mfd, sfd = os.openpty()
+        _winsize(sfd, cols, rows)
+        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor", LANG=os.environ.get("LANG", "C.UTF-8"))
+        env.pop("TMUX", None)
+        cmd = [tmux.tmux, "attach-session", "-t", f"={view}"]
+        if mode != "live":
+            cmd[2:2] = ["-f", "ignore-size"]  # the phone never resizes the PC's window
+        self.proc = subprocess.Popen(cmd, stdin=sfd, stdout=sfd, stderr=sfd, env=env, start_new_session=True,
+                                     close_fds=True)
+        os.close(sfd)
+        os.set_blocking(self.mfd, False)
+        self.q = asyncio.Queue()
+        self.loop = None
+
+    def _readable(self):
+        try:
+            data = os.read(self.mfd, 65536)
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            data = b""
+        self.q.put_nowait(data)
+
+    async def read(self):
+        if self.loop is None:
+            self.loop = asyncio.get_running_loop()
+            self.loop.add_reader(self.mfd, self._readable)
+        data = await self.q.get()
+        while data and not self.q.empty() and len(data) < 256 * 1024:  # coalesce bursts
+            nxt = self.q.get_nowait()
+            if not nxt:
+                self.q.put_nowait(b"")
+                break
+            data += nxt
+        return data
+
+    async def write(self, data):
+        # the PTY takes only a few KB at a time: a big paste must wait for room instead of being cut off
+        view = memoryview(data)
+        while view:
+            try:
+                view = view[os.write(self.mfd, view):]
+            except BlockingIOError:
+                await asyncio.sleep(0.01)
+            except OSError:
+                return
+
+    def resize(self, c, r):
+        _winsize(self.mfd, int(c), int(r))
+        try:
+            os.killpg(self.proc.pid, signal.SIGWINCH)
+        except ProcessLookupError:  # the tmux client just exited (window closed)
+            pass
+
+    async def close(self):
+        if self.loop:
+            self.loop.remove_reader(self.mfd)
+        try:
+            self.proc.terminate()
+            await asyncio.to_thread(self.proc.wait, 3)
+        except Exception:
+            self.proc.kill()
+        os.close(self.mfd)
+        await asyncio.to_thread(self.tmux.kill_session, self.view)
+
+
+def make_backend(cfg):
+    if sbcore.IS_WINDOWS:
+        import sbwin  # noqa: PLC0415  (Windows only: talks to sbkeeper)
+        return sbwin.KeeperBackend(cfg)
+    return TmuxBackend(cfg["tmux_session"])
+
+
+def _inside(path, root):
+    """path is root or below it (Windows: case-insensitive, either slash)."""
+    p, r = os.path.normcase(path), os.path.normcase(root)
+    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
 
 def _int(value, default, lo, hi):
@@ -809,8 +854,8 @@ async def serve(cfg):
     bridge = Bridge(cfg)
     bridge.loop = asyncio.get_running_loop()
     bridge.http = ClientSession(timeout=ClientTimeout(total=30))
-    await asyncio.to_thread(bridge.tmux.ensure_session)
-    await asyncio.to_thread(bridge.tmux.cleanup_views)
+    await asyncio.to_thread(bridge.term.ensure_session)
+    await asyncio.to_thread(bridge.term.cleanup_views)
 
     app = make_app(bridge)
     runner = web.AppRunner(app, access_log=None)
