@@ -42,7 +42,7 @@ import sbcore  # noqa: E402
 from aiohttp import WSMsgType, web, ClientSession, ClientTimeout  # noqa: E402
 
 log = logging.getLogger("switchboard")
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 
 # ---------------------------------------------------------------- setup commands
