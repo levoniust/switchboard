@@ -568,11 +568,11 @@ def test_devices_pair_check_revoke(tmp_path):
     d = sbcore.Devices(str(tmp_path))
     code = d.new_code()
     assert d.redeem("wrong", "x") is None
-    dev, tok = d.redeem(code, "Tim's phone")
+    dev, tok = d.redeem(code, "my-phone")
     assert d.redeem(code, "again") is None  # one-time
     assert d.check(tok) == dev and d.check("nope") is None and d.check("") is None
     assert tok not in (tmp_path / "devices.json").read_text()  # only the hash is stored
-    assert [x["name"] for x in d.list()] == ["Tim's phone"]
+    assert [x["name"] for x in d.list()] == ["my-phone"]
     assert d.revoke(dev) and d.check(tok) is None and not d.revoke(dev)
 
 
