@@ -28,7 +28,7 @@ void main() {
 
   test('fleet merges machines; ids only unique per machine', () {
     final f = Fleet();
-    final ph = NodeLink()..server = const Server(name: 'Powerhouse', hosts: ['1'], port: 1, token: 't', pin: 'aaaaaaaaaaaaaaaa', id: 'ph');
+    final ph = NodeLink()..server = const Server(name: 'alpha', hosts: ['1'], port: 1, token: 't', pin: 'aaaaaaaaaaaaaaaa', id: 'ph');
     final sf = NodeLink()..server = const Server(name: 'Surface', hosts: ['2'], port: 1, token: 't', pin: 'bbbbbbbbbbbbbbbb', id: 'sf');
     f.nodes.addAll([ph, sf]);
     ph.sessions = [Session.fromJson({'id': '@1', 'pane': '%1', 'name': 'claude'}, ph)];

@@ -1,6 +1,6 @@
 # Switchboard network protocol (proto 2)
 
-Status: design for 1.3.0. Switchboard grows from "one app ↔ one bridge" to "one app ↔ many machines".
+Status: implemented in 1.3.0 (proto 2). Switchboard grew from "one app ↔ one bridge" to "one app ↔ many machines".
 Every machine runs its own **node** (the bridge) that works on its own. There is no hub: the app talks to
 each node directly (LAN address first, then Tailscale) and merges what it sees.
 
